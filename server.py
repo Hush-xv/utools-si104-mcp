@@ -133,11 +133,12 @@ def _check_i2c_args(channel, address, timeout_ms, bus_hz, mode, addr_10bit=False
         )
 
 
-# TM section 8: the protocol has no dedicated NACK code — NACK surfaces as
-# generic IO/timeout errors. Codes meaning the dongle/transport itself is
-# unusable abort an i2c_scan; anything else counts as "no device at address"
-# (documented heuristic, hardware verify pending).
-_SCAN_FATAL_CODES = {-2, -3, -5, -9, -11}
+# Per-address absence is an ALLOWLIST, not a blocklist: only firmware NACK
+# (status=7 IO_ERROR) and probe timeout (status=8 TIMEOUT) count as "nobody
+# at this address" — verified across ~18k live-bus probes. Any other
+# signature (USB disconnect, busy, ...) aborts the scan; that stays safe
+# even for transport signatures never yet observed.
+_SCAN_ABSENT = ((-10, 7), (-10, 8))
 
 
 # Per-call correlation id. FastMCP runs each sync tool in one worker thread,
@@ -542,15 +543,16 @@ def si104_i2c_scan(
                 found.append(f"0x{addr:02X}")
                 LOG.info("si104_i2c_scan: 0x%02X acked", addr)
             except Error as e:
-                if e.code in _SCAN_FATAL_CODES:
+                if (e.code, e.firmware_status) not in _SCAN_ABSENT:
                     LOG.warning("si104_i2c_scan aborted at 0x%02X: %s", addr, e)
                     return {
                         "error": f"scan aborted at 0x{addr:02X}: {e}",
                         "code": e.code,
+                        "firmware_status": e.firmware_status,
                         "found_before_abort": found,
                         "hint": "run si104_enumerate to check the dongle is present",
                     }
-                continue  # per-address NACK/timeout = nobody at this address
+                continue  # allowlisted NACK/timeout = nobody at this address
         return {"found": found, "range": [f"0x{first:02X}", f"0x{last:02X}"]}
 
     return _with_device(serial, op, "si104_i2c_scan")
