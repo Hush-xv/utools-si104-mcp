@@ -48,7 +48,7 @@ Linux 同理（`.venv/bin/python`；Linux 还需系统 libusb）。
 | `si104_i2c_read_regs` | 读寄存器（reg 8-bit，≤256 B） |
 | `si104_i2c_write_regs` | 写寄存器（reg 8-bit，≤508 B） |
 | `si104_i2c_scan` | 7-bit 总线扫描；设备级错误（code -2/-3/-5/-9/-11）中断并返回 `found_before_abort` |
-| `si104_i2c_slave` | 一次性从机缓冲操作（raw/mailbox/register）；调用返回即释放从机 |
+| `si104_i2c_slave` | 从机缓冲读/写（raw/mailbox/register）；固件在供电期间保持通道配置，工具复用匹配配置不覆盖 |
 | `si104_raw_request` | vendor request 透传（VCC_SET=0x1E、EVENT_POLL=0x1B 等无专属工具的命令） |
 | `si104_read_vcc` | VCC 供电状态（`0x1F` 空查询，免总线流量） |
 
@@ -116,7 +116,10 @@ App 的 MCP 设置选自定义（stdio）：命令 = `<venv>\Scripts\python.exe`
 ## 边界
 
 - 容量上限各工具不同，详见工具 docstring（AI 可见）；错误信息含参数名与合法范围
-- `si104_i2c_slave` 是一次性缓冲操作：设备在调用返回时关闭，从机配置随之消失；外部主机须在调用窗口内访问。持续从机服务需要常驻会话设计（本 server 有意不提供）
+- **USB 接口号 = 功能面**（TM §1，实测确认）：0-3 = I2C 通道 0-3，4 = SPI，5 = 维护。I2C 类命令（GET_STATUS 32B、VCC_SET/0x1F 阈值查询）必须发给对应 I2C 接口，发 SPI 面（4）会报 `status=4` 拒绝；`si104_device_info` 已按面分组返回 SPI/I2C 诊断
+- **NO_POWER（firmware_status=11）**：共享 VCC 输出默认关闭，I2C 总线无上拉电源时传输报 `status=11`。使能一次即可（掉电前有效）：`si104_raw_request(channel, 0x1E, '0100')`——错误 hint 已自动携带此提示；实测使能后 VCC ≈ 3.1 V
+- `si104_i2c_slave`：**实测固件在供电期间跨 USB 会话保持通道配置**——一次配置后，主机侧工具可在后续调用里直接访问从机；工具对已初始化且匹配（role=1 + 同地址 + 同逻辑模式）的通道复用配置不覆盖，不匹配才重配
+- `si104_i2c_scan` 实测：能在回环总线上正确扫出从机地址
 - 寄存器地址 8-bit（0..255）：SDK helper 命令域仅 8 bit，>0xFF 寄存器地址暂不可表达，待硬件核实 16-bit flag 语义后经 `raw_request` 补
 - `si104_i2c_scan` 仅 7-bit（0x08..0x77）；协议无独立 NACK 码，超时/IO 类错误按"该地址无设备"处理，设备级错误中断扫描
 - `si104_device_info` 的 status 解码按 TM §8 32 B 格式；interface=4 之外的接口号映射文档未明确，格式不符降级返回 raw_hex

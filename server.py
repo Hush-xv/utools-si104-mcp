@@ -187,6 +187,12 @@ def _with_device(serial, operate, name):
                 "completion_unknown=true: the transfer may have hit the bus; "
                 "verify device state before re-sending (SDK Guide section 8)"
             )
+        if e.firmware_status == 11:  # TM section 5: NO_POWER
+            result["hint"] = (
+                "NO_POWER: the shared VCC output is off. Enable it once per "
+                "power-up with si104_raw_request(interface=I2C channel, "
+                "command=0x1E, payload_hex='0100'), then retry"
+            )
     except ValueError as e:
         LOG.warning("#%d [param] %s: %s", cid, name, e)
         raise
@@ -209,24 +215,41 @@ def si104_enumerate() -> dict:
 
 
 @mcp.tool()
-def si104_device_info(serial: Optional[str] = None) -> dict:
-    """Read-only diagnostics for one dongle: identity, firmware version, status, runtime counters, capabilities and limits (payload_max, hz_min/hz_max, timeout bounds)."""
-    _log_call("si104_device_info", serial=serial)
+def si104_device_info(serial: Optional[str] = None, channel: int = 0) -> dict:
+    """Read-only diagnostics: identity/firmware/runtime plus per-face capabilities, limits and the decoded 32-byte I2C channel status.
+
+    The dongle exposes functional USB interfaces (TM section 1): 0-3 = I2C
+    channels, 4 = SPI, 5 = maintenance. info/version/runtime are device-wide
+    (queried on the SPI face); capabilities/limits come back for both the
+    SPI face and the selected I2C channel; status is the 32-byte I2C
+    GET_STATUS of that channel, decoded per TM section 8.
+    """
+    _log_call("si104_device_info", serial=serial, channel=channel)
+    if not 0 <= channel <= 3:
+        raise ValueError(f"channel must be 0..3, got {channel}")
 
     def op(dev):
         out = {}
-        for key, fn in (
-            ("info", dev.info),
-            ("version_hex", lambda: dev.version().hex() or "(empty)"),
-            ("status", lambda: _decode_i2c_status(dev.status())),
-            ("runtime", lambda: list(dev.runtime())),
-            ("capabilities", dev.capabilities),
-            ("limits", dev.limits),
-        ):
+
+        def put(key, fn):
             try:
                 out[key] = fn()
             except (Error, struct.error, RuntimeError) as e:
                 out[key] = {"error": str(e)}  # keep the rest of the diagnostics
+
+        put("info", dev.info)
+        put("version_hex", lambda: dev.version().hex() or "(empty)")
+        put("runtime", lambda: list(dev.runtime()))
+        put("spi", lambda: {"capabilities": dev.capabilities(4), "limits": dev.limits(4)})
+        put(
+            "i2c",
+            lambda: {
+                "channel": channel,
+                "capabilities": dev.capabilities(channel),
+                "limits": dev.limits(channel),
+                "status": _decode_i2c_status(dev.status(channel)),
+            },
+        )
         return out
 
     return _with_device(serial, op, "si104_device_info")
@@ -514,18 +537,23 @@ def si104_i2c_scan(
 
 
 @mcp.tool()
-def si104_read_vcc(serial: Optional[str] = None) -> dict:
-    """Read the dongle VCC supply state via the documented VCC_THRESHOLD (0x1F) empty query — no bus traffic, works without a target device.
+def si104_read_vcc(serial: Optional[str] = None, channel: int = 0) -> dict:
+    """Read the shared VCC rail state via the documented VCC_THRESHOLD (0x1F) empty query — no bus traffic, works without a target device.
 
-    Returns output/persist enable, threshold_mv, adc_mv, measured_mv,
-    fail_reason, op_result (0 = success; per TM section 8, op_result=0 alone
-    does not prove a power request took effect). The per-transfer alternative
-    is si104_i2c_transfer with monitor_vcc=true.
+    channel selects the I2C interface that serves the query (VCC commands
+    live on I2C interfaces 0-3, not the SPI/maintenance faces). Returns
+    output/persist enable, threshold_mv, adc_mv, measured_mv, fail_reason,
+    op_result (0 = success; op_result=0 alone does not prove a power request
+    took effect). output_enabled=false + transfers failing with NO_POWER
+    (firmware_status=11) means the rail is off: enable via
+    si104_raw_request(channel, 0x1E, '0100').
     """
-    _log_call("si104_read_vcc", serial=serial)
+    _log_call("si104_read_vcc", serial=serial, channel=channel)
+    if not 0 <= channel <= 3:
+        raise ValueError(f"channel must be 0..3, got {channel}")
 
     def op(dev):
-        raw = dev.request(4, 0x1F)
+        raw = dev.request(channel, 0x1F)
         if len(raw) < 10:
             return {
                 "error": f"VCC query reply too short ({len(raw)} bytes)",
@@ -676,19 +704,18 @@ def si104_i2c_slave(
     data_big_endian: bool = False,
     timeout_ms: int = 1000,
 ) -> dict:
-    """One-shot I2C slave buffer operation on one channel — the slave config lives only for this call.
+    """I2C slave buffer read/write on one channel (raw/mailbox/register logic modes).
 
-    Stateless server model: this call opens, configures role=1, polls until
-    initialized=1, moves buffer data and CLOSES the device — the slave stops
-    existing when the call returns. The external master must access the
-    dongle within the call window; continuous slave service needs a
-    resident-session design that this server intentionally does not have.
-    slave_mode logic: 0 raw / 1 mailbox / 2 register (TM §8 logic_flags
-    bit0-1). action="write" sets the slave send buffer (what an external
-    master reads next), up to 256 B; action="read" fetches bytes the external
-    master wrote to the slave receive buffer, up to 512 B. A config ack does
-    not mean the slave is up — the tool polls GET_STATUS initialized=1 (up to
-    ~1 s) first; timeout returns an error with status.
+    Verified on hardware: the firmware keeps channel config across USB
+    sessions while powered, so a slave configured by an earlier call stays
+    alive between MCP calls — master-side tools can talk to it in separate
+    calls. The tool reuses an existing matching config (initialized + role=1
+    + same slave_addr + same logic mode) instead of clobbering it; mismatch
+    or missing config is (re)configured, then it polls GET_STATUS
+    initialized=1 (up to ~1 s). slave_mode: 0 raw / 1 mailbox / 2 register
+    (TM section 8). action="write" sets the slave send buffer (what an
+    external master reads next), up to 256 B; action="read" fetches bytes
+    the external master wrote, up to 512 B.
     """
     if action not in ("read", "write"):
         raise ValueError('action must be "read" or "write"')
@@ -704,24 +731,33 @@ def si104_i2c_slave(
     _log_call("si104_i2c_slave", serial=serial, channel=channel, action=action, bytes=len(data), slave_mode=slave_mode)
 
     def op(dev):
-        dev.i2c_configure(
-            channel,
-            I2cConfig(
-                role=1,
-                mode=mode,
-                bus_hz=100_000 if mode != 3 else bus_hz,
-                slave_addr=slave_addr,
-                timeout_ms=timeout_ms,
-                slave_mode=slave_mode,
-                reg_addr_16bit=reg_addr_16bit,
-                data_16bit=data_16bit,
-                data_big_endian=data_big_endian,
-            ),
-        )
+        # Firmware keeps channel config across USB sessions while powered.
+        # Reuse a matching slave config instead of clobbering it with defaults.
+        cur = _decode_i2c_status(dev.status(channel))
+        if not (
+            cur.get("initialized")
+            and cur.get("role") == 1
+            and cur.get("slave_addr") == slave_addr
+            and (slave_mode == 0 or cur.get("slave_logic_mode") == slave_mode)
+        ):
+            dev.i2c_configure(
+                channel,
+                I2cConfig(
+                    role=1,
+                    mode=mode,
+                    bus_hz=100_000 if mode != 3 else bus_hz,
+                    slave_addr=slave_addr,
+                    timeout_ms=timeout_ms,
+                    slave_mode=slave_mode,
+                    reg_addr_16bit=reg_addr_16bit,
+                    data_16bit=data_16bit,
+                    data_big_endian=data_big_endian,
+                ),
+            )
         status = {}
         initialized = False
         for _ in range(20):
-            status = _decode_i2c_status(dev.status())
+            status = _decode_i2c_status(dev.status(channel))
             if status.get("initialized"):
                 initialized = True
                 break
@@ -738,7 +774,7 @@ def si104_i2c_slave(
                 "initialized": True,
                 "data_hex": got.hex(),
                 "size": len(got),
-                "status": _decode_i2c_status(dev.status()),
+                "status": _decode_i2c_status(dev.status(channel)),
             }
         # action == "write"
         dev.i2c_slave_write(channel, data)
