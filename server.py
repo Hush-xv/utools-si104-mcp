@@ -276,7 +276,11 @@ def si104_spi_transfer(
 
     tx_hex is clocked out; rx_size bytes are clocked in during the same
     transaction (lengths are independent: TX-only = rx_size 0, RX-only =
-    empty tx_hex). tx is at most 512 bytes and rx_size at most 512.
+    empty tx_hex). tx is at most 504 bytes and rx_size at most 512.
+    Firmware detail (hardware-verified): >504B TX-only transfers get
+    auto-routed to the long-TX path (which is TX-only); this tool caps tx
+    at 504B for predictable single-command behavior — use
+    si104_spi_tx_words for larger sends.
     Typical: data_bits 8/16/32, cpol/cpha 0 or 1, sclk_hz 1_000..10_000_000.
     """
     _log_call(
@@ -466,10 +470,13 @@ def si104_i2c_write_regs(
     Verified on hardware against a register-mode slave over the loopback.
     reg is 0..255 with reg_addr_16bit=false (single pointer byte); with
     reg_addr_16bit=true reg is 0..65535 and the pointer phase carries two
-    bytes MSB-first. data_hex is at most 502 bytes per call with 8-bit
-    pointers (504-byte transfer tx cap minus the pointer byte; 501 with
-    16-bit pointers). mode: 0 standard 100k / 1 fast 400k / 2 fast-plus 1M /
-    3 custom (bus_hz applies only in mode 3).
+    bytes MSB-first. Auto-increment is target-device-specific: SI104's own
+    register-mode slave mirror is page-scoped — one pointer write stops at
+    the 256-byte page boundary (TM section 8, hardware-verified); split
+    larger writes per page. data_hex is at most 502 bytes per call with
+    8-bit pointers (504-byte transfer tx cap minus the pointer byte; 501
+    with 16-bit pointers). mode: 0 standard 100k / 1 fast 400k / 2 fast-plus
+    1M / 3 custom (bus_hz applies only in mode 3).
     """
     _log_call(
         "si104_i2c_write_regs",
