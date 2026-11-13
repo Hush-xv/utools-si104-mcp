@@ -403,17 +403,17 @@ def si104_i2c_read_regs(
     size: int = 1,
     bus_hz: int = 100_000,
     mode: int = 0,
+    reg_addr_16bit: bool = False,
     timeout_ms: int = 1000,
 ) -> dict:
-    """Read `size` bytes of device registers starting at `reg` (write-register + repeated-start read, handled by firmware).
+    """Master register read: write the register pointer then repeated-START read, one atomic transaction.
 
-    reg is 8-bit (0..255) — the SDK helper carries an 8-bit register command,
-    so register addresses above 0xFF are NOT expressible through this tool
-    even though the firmware has a 16-bit register-address flag; targets with
-    wider registers go through si104_raw_request (I2C CONFIG logic_flags
-    bit2) once confirmed on hardware. mode: 0 standard 100k / 1 fast 400k /
-    2 fast-plus 1M / 3 custom (bus_hz applies only in mode 3). size is at
-    most 256 bytes per call (register-path read cap, TM section 4).
+    Verified on hardware against a register-mode slave over the ch0<->ch1
+    loopback. reg is 0..255 with reg_addr_16bit=false (single pointer byte);
+    with reg_addr_16bit=true reg is 0..65535 and the pointer phase carries
+    two bytes MSB-first. size is at most 512 bytes (the transfer rx cap).
+    mode: 0 standard 100k / 1 fast 400k / 2 fast-plus 1M / 3 custom (bus_hz
+    applies only in mode 3).
     """
     _log_call(
         "si104_i2c_read_regs",
@@ -423,11 +423,18 @@ def si104_i2c_read_regs(
         reg=hex(reg),
         size=size,
         mode=mode,
+        reg_addr_16bit=reg_addr_16bit,
     )
-    if not 0 <= reg <= 255:
-        raise ValueError(f"reg must be 0..255, got {reg}")
-    if not 1 <= size <= 256:
-        raise ValueError(f"size must be 1..256 (register read cap), got {size}")
+    if reg_addr_16bit:
+        if not 0 <= reg <= 65535:
+            raise ValueError(f"reg must be 0..65535 with reg_addr_16bit, got {reg}")
+        ptr = reg.to_bytes(2, "big")
+    else:
+        if not 0 <= reg <= 255:
+            raise ValueError(f"reg must be 0..255, got {reg}")
+        ptr = bytes([reg])
+    if not 1 <= size <= MAX_PAYLOAD:
+        raise ValueError(f"size must be 1..512, got {size}")
     _check_i2c_args(channel, address, timeout_ms, bus_hz, mode)
 
     def op(dev):
@@ -435,7 +442,7 @@ def si104_i2c_read_regs(
             channel,
             _i2c_config(address, bus_hz, timeout_ms, mode=mode),
         )
-        data = dev.i2c_read_buffer(channel, reg, size)
+        data = dev.i2c_transfer(channel, address, ptr, size)
         return {"data_hex": data.hex(), "size": len(data)}
 
     return _with_device(serial, op, "si104_i2c_read_regs")
@@ -450,16 +457,18 @@ def si104_i2c_write_regs(
     data_hex: str = "",
     bus_hz: int = 100_000,
     mode: int = 0,
+    reg_addr_16bit: bool = False,
     timeout_ms: int = 1000,
 ) -> dict:
-    """Write `data_hex` to device registers starting at `reg` (register auto-increment per firmware).
+    """Master register write: pointer bytes + data in one write transaction (register auto-increment per target device protocol).
 
-    reg is 8-bit (0..255) — same 8-bit command-field limit as the read tool;
-    wider register addresses go through si104_raw_request once the 16-bit
-    flag semantics are confirmed on hardware. data_hex is at most 508 bytes
-    per call (register write cap, SDK Guide section 7). mode: 0 standard
-    100k / 1 fast 400k / 2 fast-plus 1M / 3 custom (bus_hz applies only in
-    mode 3).
+    Verified on hardware against a register-mode slave over the loopback.
+    reg is 0..255 with reg_addr_16bit=false (single pointer byte); with
+    reg_addr_16bit=true reg is 0..65535 and the pointer phase carries two
+    bytes MSB-first. data_hex is at most 502 bytes per call with 8-bit
+    pointers (504-byte transfer tx cap minus the pointer byte; 501 with
+    16-bit pointers). mode: 0 standard 100k / 1 fast 400k / 2 fast-plus 1M /
+    3 custom (bus_hz applies only in mode 3).
     """
     _log_call(
         "si104_i2c_write_regs",
@@ -469,12 +478,23 @@ def si104_i2c_write_regs(
         reg=hex(reg),
         data_bytes=len(data_hex) // 2,
         mode=mode,
+        reg_addr_16bit=reg_addr_16bit,
     )
-    if not 0 <= reg <= 255:
-        raise ValueError(f"reg must be 0..255, got {reg}")
+    if reg_addr_16bit:
+        if not 0 <= reg <= 65535:
+            raise ValueError(f"reg must be 0..65535 with reg_addr_16bit, got {reg}")
+        ptr = reg.to_bytes(2, "big")
+    else:
+        if not 0 <= reg <= 255:
+            raise ValueError(f"reg must be 0..255, got {reg}")
+        ptr = bytes([reg])
     data = _parse_hex(data_hex, "data_hex")
-    if len(data) > 508:
-        raise ValueError(f"data_hex is {len(data)} bytes; register write caps at 508 bytes per call")
+    if not data:
+        raise ValueError("data_hex is required")
+    if len(ptr) + len(data) > 504:
+        raise ValueError(
+            f"pointer ({len(ptr)} B) + data ({len(data)} B) exceeds the 504-byte transfer tx cap"
+        )
     _check_i2c_args(channel, address, timeout_ms, bus_hz, mode)
 
     def op(dev):
@@ -482,7 +502,7 @@ def si104_i2c_write_regs(
             channel,
             _i2c_config(address, bus_hz, timeout_ms, mode=mode),
         )
-        dev.i2c_write_buffer(channel, reg, data)
+        dev.i2c_transfer(channel, address, ptr + data, 0)
         return {"written_bytes": len(data)}
 
     return _with_device(serial, op, "si104_i2c_write_regs")

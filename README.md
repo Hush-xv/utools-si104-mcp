@@ -45,8 +45,8 @@ Linux 同理（`.venv/bin/python`；Linux 还需系统 libusb）。
 | `si104_spi_tx_words` | SPI 长发送（BEGIN/DATA/COMMIT 流式，8/16/32 bit，≤1024 word，无回读） |
 | `si104_spi_control` | abort / tx_status（BB5HI 状态解码） |
 | `si104_i2c_transfer` | 原子 I2C 主机事务（写后读重复 START）；`monitor_vcc=true` 附 vcc 字段 |
-| `si104_i2c_read_regs` | 读寄存器（reg 8-bit，≤256 B） |
-| `si104_i2c_write_regs` | 写寄存器（reg 8-bit，≤508 B） |
+| `si104_i2c_read_regs` | 主机寄存器读：指针相位 + 重复 START（实测验证）；`reg_addr_16bit=true` 时 reg 0..65535，指针 2 字节 MSB-first |
+| `si104_i2c_write_regs` | 主机寄存器写：指针 + 数据一条事务；16-bit 寄存器地址实测可用 |
 | `si104_i2c_scan` | 7-bit 总线扫描；设备级错误（code -2/-3/-5/-9/-11）中断并返回 `found_before_abort` |
 | `si104_i2c_slave` | 从机缓冲读/写（raw/mailbox/register）；固件在供电期间保持通道配置，工具复用匹配配置不覆盖 |
 | `si104_raw_request` | vendor request 透传（VCC_SET=0x1E、EVENT_POLL=0x1B 等无专属工具的命令） |
@@ -120,7 +120,8 @@ App 的 MCP 设置选自定义（stdio）：命令 = `<venv>\Scripts\python.exe`
 - **NO_POWER（firmware_status=11）**：共享 VCC 输出默认关闭，I2C 总线无上拉电源时传输报 `status=11`。使能一次即可（掉电前有效）：`si104_raw_request(channel, 0x1E, '0100')`——错误 hint 已自动携带此提示；实测使能后 VCC ≈ 3.1 V
 - `si104_i2c_slave`：**实测固件在供电期间跨 USB 会话保持通道配置**——一次配置后，主机侧工具可在后续调用里直接访问从机；工具对已初始化且匹配（role=1 + 同地址 + 同逻辑模式）的通道复用配置不覆盖，不匹配才重配
 - `si104_i2c_scan` 实测：能在回环总线上正确扫出从机地址
-- 寄存器地址 8-bit（0..255）：SDK helper 命令域仅 8 bit，>0xFF 寄存器地址暂不可表达，待硬件核实 16-bit flag 语义后经 `raw_request` 补
+- **寄存器式访问已实测重建**：绑定 `read_buffer/write_buffer` 对固件 1.3 **已失效**（连本通道镜像都报 `invalid I2C write/read command/length`，文档漂移实锤），工具重建在 `i2c_transfer` 指针相位上；`reg_addr_16bit=true` 时指针 2 字节 MSB-first，reg 0..65535 **实测可用**
+- **合并事务语义（实测）**：写后读的写入段对从机逻辑是"命令相位"，不落入从机接收缓冲；mailbox 模式纯写的首字节是指针（其余才入邮箱）
 - `si104_i2c_scan` 仅 7-bit（0x08..0x77）；协议无独立 NACK 码，超时/IO 类错误按"该地址无设备"处理，设备级错误中断扫描
 - `si104_device_info` 的 status 解码按 TM §8 32 B 格式；interface=4 之外的接口号映射文档未明确，格式不符降级返回 raw_hex
 - 参数入口校验前移：channel 0-3、7/10-bit 地址域、timeout_ms u16（0=固件默认 1000）、custom 模式 bus_hz 10k-1M、sclk_hz 正数
