@@ -23,7 +23,10 @@ async def main() -> int:
 
             async def call(name, args=None):
                 res = await session.call_tool(name, args or {})
-                return json.loads(res.content[0].text)
+                text = res.content[0].text
+                if text.startswith("Error executing tool"):  # SDK ToolError wrap
+                    text = text.split(": ", 1)[1]
+                return json.loads(text)
 
             print("== enumerate ==")
             print(await call("si104_enumerate"))

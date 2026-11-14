@@ -9,6 +9,7 @@ page scoping, mailbox slave, SPI echo, raw-request face checks).
 
 Run: python unit_test.py   (exit 1 on any failure)
 """
+import json
 import struct
 import sys
 
@@ -17,6 +18,7 @@ import si104_stub
 sys.modules["si104"] = si104_stub  # server imports si104 -> test double
 
 import server  # noqa: E402  (must come after the stub injection)
+from mcp.server.fastmcp.exceptions import ToolError  # noqa: E402
 
 RESULTS = []
 
@@ -36,9 +38,22 @@ def expect_value_error(name, fn, needle=None):
 
 
 def tool(name):
-    """FastMCP registers the plain function; unwrap if the decorator wrapped it."""
+    """FastMCP registers the plain function; unwrap if the decorator wrapped it.
+
+    Device-error results surface as ToolError with the full structured dict
+    as JSON text (the MCP isError=true path) — unwrap them back into the
+    dict the checks expect, mirroring what MCP clients see.
+    """
     fn = getattr(server, name)
-    return fn.fn if hasattr(fn, "fn") else fn
+    fn = fn.fn if hasattr(fn, "fn") else fn
+
+    def invoke(**kw):
+        try:
+            return fn(**kw)
+        except ToolError as e:
+            return json.loads(str(e))
+
+    return invoke
 
 
 # ------------------------------------------------------------- hex + decoders

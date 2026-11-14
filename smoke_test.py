@@ -21,6 +21,16 @@ SERVER = Path(__file__).with_name("server.py")
 HAVE_REAL_SDK = importlib.util.find_spec("si104") is not None
 
 
+def parse(res):
+    """CallToolResult text -> dict. The SDK prefixes tool-raised ToolError
+    messages with "Error executing tool <name>: "; the structured JSON
+    payload follows it verbatim."""
+    text = res.content[0].text
+    if text.startswith("Error executing tool"):
+        text = text.split(": ", 1)[1]
+    return json.loads(text)
+
+
 async def main() -> int:
     env = None
     if not HAVE_REAL_SDK:
@@ -46,19 +56,29 @@ async def main() -> int:
             missing = required - set(names)
             assert not missing, f"missing tools: {missing}"
 
+            # MCP spec conformance: every tool declares a structured-output
+            # schema; enumerate is read-only with a display title.
+            assert all(t.outputSchema is not None for t in tools.tools), \
+                "tools missing outputSchema"
+            enum_tool = next(t for t in tools.tools if t.name == "si104_enumerate")
+            assert enum_tool.annotations and enum_tool.annotations.readOnlyHint is True
+            assert enum_tool.title == "List SI104 dongles on USB"
+
             res = await session.call_tool("si104_enumerate", {})
-            payload = json.loads(res.content[0].text)
+            payload = parse(res)
             print("enumerate:", payload)
             assert "count" in payload
+            assert res.structuredContent is not None, "missing structuredContent"
+            assert res.structuredContent.get("count") == payload["count"]
 
             res = await session.call_tool("si104_device_info", {})
-            payload = json.loads(res.content[0].text)
+            payload = parse(res)
             print("device_info:", payload)
 
             res = await session.call_tool(
                 "si104_spi_transfer", {"tx_hex": "0000", "rx_size": 2}
             )
-            payload = json.loads(res.content[0].text)
+            payload = parse(res)
             print("spi_transfer:", payload)
             # no dongle -> structured device error, with dongle -> rx reply
             assert "error" in payload or "rx_hex" in payload
@@ -66,12 +86,14 @@ async def main() -> int:
             res = await session.call_tool(
                 "si104_raw_request", {"command": 0x1F}
             )  # VCC_THRESHOLD query
-            payload = json.loads(res.content[0].text)
+            payload = parse(res)
             print("raw_request:", payload)
             assert "error" in payload or "reply_hex" in payload
+            # device-level failures carry the MCP isError flag, text stays JSON
+            assert res.isError == ("error" in payload)
 
             res = await session.call_tool("si104_read_vcc", {})
-            payload = json.loads(res.content[0].text)
+            payload = parse(res)
             print("read_vcc:", payload)
             assert "error" in payload or "measured_mv" in payload
 

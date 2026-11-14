@@ -25,10 +25,10 @@ async def main() -> int:
 
             async def call(name, args=None):
                 res = await session.call_tool(name, args or {})
-                try:
-                    return json.loads(res.content[0].text)
-                except json.JSONDecodeError:
-                    return {"text": res.content[0].text}
+                text = res.content[0].text
+                if text.startswith("Error executing tool"):  # SDK ToolError wrap
+                    text = text.split(": ", 1)[1]
+                return json.loads(text)
 
             print("8-bit pattern    :", await call(
                 "si104_spi_transfer", {"tx_hex": "A55AC35C", "rx_size": 4}))

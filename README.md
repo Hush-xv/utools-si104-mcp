@@ -12,6 +12,12 @@
 - **文档对齐**：容量上限（i2c TX≤504、寄存器读≤512 但自增按 256 页翻页、寄存器写≤504 含指针字节、raw request 请求/回复各≤512、SPI TX≤504、长发送 ≤1024 word）、速率预设（mode 0/1/2 = 100k/400k/1M，`bus_hz` 仅 mode=3 生效）、状态解码（SPI_TX_STATUS BB5HI、I2C GET_STATUS 32 B）均按官方《SDK Guide》/《Technical Manual》实现（容量与错误码已对照 SDK 1.0.5 官方文档复核）
 - **可诊断**：每调用关联 ID（`#N`）+ `[param]/[device]/[internal]` 分级日志；负载只记长度不记内容
 
+## MCP 规范化
+
+- **结构化输出**：14 个工具声明 `outputSchema`（pydantic 模型，字段全可选、可空），成功调用同时返回 `structuredContent` 与等价的 text JSON——旧客户端不受影响，强类型客户端可直接按 schema 解析；诊断性附加字段经 `extra="allow"` 透传，不破坏校验
+- **工具注解与显示名**：`si104_enumerate / device_info / read_vcc / i2c_scan` 标注 `readOnlyHint=true`；`vcc_control / spi_control` 标注 `idempotentHint=true`；`i2c_control` 标注 `destructiveHint=true`（reset 清配置）；`raw_request` 有意不标注（万能透传不作承诺）；全部工具带 `title`
+- **错误语义**：参数校验失败与设备级失败均以 `isError=true` 返回（MCP 规范建议）；结果文本仍是完整结构化 JSON（SDK 会在其前加 `Error executing tool <tool>: ` 前缀，剥离后 `json.loads` 即得全部字段）；`completion_unknown` 语义不变
+
 ## 前置条件
 
 - UTools-SI104 dongle

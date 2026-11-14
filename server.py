@@ -7,6 +7,7 @@ use it between AI calls. Designed for same-time single-client usage.
 from __future__ import annotations
 
 import itertools
+import json
 import logging
 import os
 import struct
@@ -16,6 +17,9 @@ import time
 from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
+from pydantic import BaseModel, ConfigDict
 
 try:
     from si104 import Device, SpiConfig, I2cConfig, Error
@@ -80,6 +84,117 @@ MAX_PAYLOAD = 512
 # i2c_scan probe timeout: NACK fails immediately, the timeout only guards
 # against clock-stretch hangs. Keeps a full 0x08..0x77 sweep under ~10 s.
 PROBE_TIMEOUT_MS = 50
+
+
+# ---------------------------------------------------------------- MCP output
+# Structured-output models (MCP spec: outputSchema + structuredContent).
+# pydantic BaseModel, all fields optional: the generated schema marks every
+# property nullable, so error results (fields on _ErrBase) and partial
+# payloads validate cleanly against it; extra diagnostic keys are preserved
+# (extra="allow"). The text JSON fallback stays byte-for-byte the same.
+class _ErrBase(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    error: str | None = None
+    code: int | None = None
+    code_meaning: str | None = None
+    backend_code: int | None = None
+    firmware_status: int | None = None
+    completion_unknown: bool | None = None
+    hint: str | None = None
+    retry_hint: str | None = None
+
+
+class _DeviceEntry(_ErrBase):
+    vid: int | None = None
+    pid: int | None = None
+    bus: int | None = None
+    address: int | None = None
+    serial: str | None = None
+
+
+class EnumerateOut(_ErrBase):
+    count: int | None = None
+    devices: list[_DeviceEntry] | None = None
+
+
+class DeviceInfoOut(_ErrBase):
+    info: dict | None = None
+    version_hex: str | None = None
+    runtime: list[int] | None = None
+    spi: dict | None = None
+    i2c: dict | None = None
+    vcc: dict | None = None
+
+
+class TransferOut(_ErrBase):
+    rx_hex: str | None = None
+    rx_bytes: int | None = None
+    vcc: dict | None = None
+
+
+class RegsReadOut(_ErrBase):
+    data_hex: str | None = None
+    size: int | None = None
+
+
+class RegsWriteOut(_ErrBase):
+    written_bytes: int | None = None
+
+
+class ScanOut(_ErrBase):
+    found: list[str] | None = None
+    range: list[str] | None = None
+    found_before_abort: list[str] | None = None
+
+
+class ControlOut(_ErrBase):
+    action: str | None = None
+    channel: int | None = None
+    reply_hex: str | None = None
+    state: str | None = None
+    total_bytes: int | None = None
+    received_bytes: int | None = None
+    begin_seq: int | None = None
+    commit_seq: int | None = None
+    result: int | None = None
+    session_id: int | None = None
+    raw_hex: str | None = None
+
+
+class TxWordsOut(_ErrBase):
+    words: int | None = None
+
+
+class RawRequestOut(_ErrBase):
+    reply_hex: str | None = None
+    reply_bytes: int | None = None
+
+
+class VccStatusOut(_ErrBase):
+    output_enabled: bool | None = None
+    persist_enable: bool | None = None
+    threshold_mv: int | None = None
+    adc_mv: int | None = None
+    fail_reason: int | None = None
+    op_result: int | None = None
+    measured_mv: int | None = None
+    raw_hex: str | None = None
+
+
+class VccControlOut(VccStatusOut):
+    requested_enable: bool | None = None
+    requested_persist: bool | None = None
+
+
+class SlaveOut(_ErrBase):
+    initialized: bool | None = None
+    action: str | None = None
+    data_hex: str | None = None
+    size: int | None = None
+    written_bytes: int | None = None
+    pushed_bytes: int | None = None
+    status: dict | None = None
 
 # Manual LM-SI104-TM-001 §7.2: SPI_TX_STATUS reply is BB5HI (16 bytes).
 _SPI_TX_STATE = {
@@ -332,22 +447,33 @@ def _with_device(serial, operate, name):
         LOG.exception("#%d [internal] fault in %s", cid, name)
         raise
     _log_result(cid, name, result)
+    if isinstance(result, dict) and "error" in result:
+        # MCP spec: tool execution failures are reported with isError=true.
+        # The JSON text keeps every structured field, so callers parse it the
+        # same way as before — the protocol layer just gets the failure flag.
+        raise ToolError(json.dumps(result))
     return result
 
 
 # ---------------------------------------------------------------- diagnostics
 
 
-@mcp.tool()
-def si104_enumerate() -> dict:
+@mcp.tool(
+    title="List SI104 dongles on USB",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
+def si104_enumerate() -> EnumerateOut:
     """List SI104 dongles over USB. Returns {count, devices:[{vid,pid,bus,address,serial}]}. An empty list means nothing is plugged in."""
     devices = Device.enumerate()
     LOG.info("si104_enumerate -> %d device(s)", len(devices))
     return {"count": len(devices), "devices": devices}
 
 
-@mcp.tool()
-def si104_device_info(serial: Optional[str] = None, channel: int = 0) -> dict:
+@mcp.tool(
+    title="Read-only device diagnostics",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
+def si104_device_info(serial: Optional[str] = None, channel: int = 0) -> DeviceInfoOut:
     """Read-only diagnostics: identity/firmware/runtime plus per-face capabilities, limits, the decoded 32-byte I2C channel status and the selected channel's VCC rail state.
 
     The dongle exposes functional USB interfaces (TM section 1): 0-3 = I2C
@@ -395,7 +521,7 @@ def si104_device_info(serial: Optional[str] = None, channel: int = 0) -> dict:
 # ---------------------------------------------------------------------- SPI
 
 
-@mcp.tool()
+@mcp.tool(title="Atomic SPI full-duplex transfer")
 def si104_spi_transfer(
     serial: Optional[str] = None,
     tx_hex: str = "",
@@ -407,7 +533,7 @@ def si104_spi_transfer(
     lsb_first: bool = False,
     cs_active_high: bool = False,
     timeout_ms: int = 1000,
-) -> dict:
+) -> TransferOut:
     """One atomic SPI transaction: configure bus, full-duplex transfer, close.
 
     tx_hex is clocked out; rx_size bytes are clocked in during the same
@@ -479,7 +605,7 @@ def _i2c_config(address, bus_hz, timeout_ms, mode=0, addr_10bit=False):
     )
 
 
-@mcp.tool()
+@mcp.tool(title="Atomic I2C master transfer")
 def si104_i2c_transfer(
     serial: Optional[str] = None,
     channel: int = 0,
@@ -491,7 +617,7 @@ def si104_i2c_transfer(
     addr_10bit: bool = False,
     monitor_vcc: bool = False,
     timeout_ms: int = 1000,
-) -> dict:
+) -> TransferOut:
     """One atomic I2C master transaction: configure, transfer, close.
 
     Writes tx_hex then reads rx_size bytes in one sequence
@@ -538,7 +664,7 @@ def si104_i2c_transfer(
     return _with_device(serial, op, "si104_i2c_transfer")
 
 
-@mcp.tool()
+@mcp.tool(title="I2C register read")
 def si104_i2c_read_regs(
     serial: Optional[str] = None,
     channel: int = 0,
@@ -549,7 +675,7 @@ def si104_i2c_read_regs(
     mode: int = 0,
     reg_addr_16bit: bool = False,
     timeout_ms: int = 1000,
-) -> dict:
+) -> RegsReadOut:
     """Master register read: write the register pointer then repeated-START read, one atomic transaction.
 
     Verified on hardware against a register-mode slave over the ch0<->ch1
@@ -595,7 +721,7 @@ def si104_i2c_read_regs(
     return _with_device(serial, op, "si104_i2c_read_regs")
 
 
-@mcp.tool()
+@mcp.tool(title="I2C register write")
 def si104_i2c_write_regs(
     serial: Optional[str] = None,
     channel: int = 0,
@@ -606,7 +732,7 @@ def si104_i2c_write_regs(
     mode: int = 0,
     reg_addr_16bit: bool = False,
     timeout_ms: int = 1000,
-) -> dict:
+) -> RegsWriteOut:
     """Master register write: pointer bytes + data in one write transaction (register auto-increment per target device protocol).
 
     Verified on hardware against a register-mode slave over the loopback.
@@ -658,7 +784,10 @@ def si104_i2c_write_regs(
     return _with_device(serial, op, "si104_i2c_write_regs")
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Scan I2C bus addresses",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
 def si104_i2c_scan(
     serial: Optional[str] = None,
     channel: int = 0,
@@ -666,7 +795,7 @@ def si104_i2c_scan(
     mode: int = 0,
     first: int = 0x08,
     last: int = 0x77,
-) -> dict:
+) -> ScanOut:
     """Probe 7-bit addresses first..last on one I2C channel and return the ones that ACK a 1-byte read. 7-bit only by design.
 
     Use this before talking to an unknown bus: one call replaces ~112
@@ -708,12 +837,15 @@ def si104_i2c_scan(
     return _with_device(serial, op, "si104_i2c_scan")
 
 
-@mcp.tool()
+@mcp.tool(
+    title="I2C channel abort/reset",
+    annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True),
+)
 def si104_i2c_control(
     serial: Optional[str] = None,
     channel: int = 0,
     action: str = "abort",
-) -> dict:
+) -> ControlOut:
     """I2C channel recovery: action="abort" cancels an in-flight transfer on the channel (ABORT=0x14); action="reset" resets the whole channel and clears its configuration (RESET=0x15).
 
     Use when a transfer wedged (e.g. a target clock-stretches past every
@@ -738,8 +870,11 @@ def si104_i2c_control(
     return _with_device(serial, op, "si104_i2c_control")
 
 
-@mcp.tool()
-def si104_read_vcc(serial: Optional[str] = None, channel: int = 0) -> dict:
+@mcp.tool(
+    title="Read VCC rail state",
+    annotations=ToolAnnotations(readOnlyHint=True),
+)
+def si104_read_vcc(serial: Optional[str] = None, channel: int = 0) -> VccStatusOut:
     """Read the shared VCC rail state via the documented VCC_THRESHOLD (0x1F) empty query — no bus traffic, works without a target device.
 
     channel selects the I2C interface that serves the query (VCC commands
@@ -760,13 +895,16 @@ def si104_read_vcc(serial: Optional[str] = None, channel: int = 0) -> dict:
     return _with_device(serial, op, "si104_read_vcc")
 
 
-@mcp.tool()
+@mcp.tool(
+    title="Enable/disable VCC output",
+    annotations=ToolAnnotations(idempotentHint=True),
+)
 def si104_vcc_control(
     serial: Optional[str] = None,
     channel: int = 0,
     enable: bool = True,
     persist: bool = False,
-) -> dict:
+) -> VccControlOut:
     """Enable or disable the shared VCC output that feeds the I2C pull-ups (VCC_SET=0x1E: u8 enable + u8 save).
 
     This is the NO_POWER (firmware_status=11) recovery path: the shared
@@ -798,7 +936,7 @@ def si104_vcc_control(
     return _with_device(serial, op, "si104_vcc_control")
 
 
-@mcp.tool()
+@mcp.tool(title="SPI long send (words)")
 def si104_spi_tx_words(
     serial: Optional[str] = None,
     tx_hex: str = "",
@@ -809,7 +947,7 @@ def si104_spi_tx_words(
     lsb_first: bool = False,
     cs_active_high: bool = False,
     timeout_ms: int = 1000,
-) -> dict:
+) -> TxWordsOut:
     """Stream SPI words TX-only via the staged long-TX path (BEGIN/DATA/COMMIT; the bus starts on commit).
 
     data_bits must be 8/16/32 (long-TX restriction, TM §7.1); tx_hex length
@@ -849,11 +987,14 @@ def si104_spi_tx_words(
     return _with_device(serial, op, "si104_spi_tx_words")
 
 
-@mcp.tool()
+@mcp.tool(
+    title="SPI abort / tx status",
+    annotations=ToolAnnotations(idempotentHint=True),
+)
 def si104_spi_control(
     serial: Optional[str] = None,
     action: str = "tx_status",
-) -> dict:
+) -> ControlOut:
     """SPI session control: action="abort" cancels a pending long-TX upload or running transfer; action="tx_status" reports long-TX state (idle/uploading/committable/done_ok/done_error/cancelled_or_expired) with byte counters and result code.
 
     State is per USB session: in this stateless server every call is a fresh
@@ -873,13 +1014,15 @@ def si104_spi_control(
     return _with_device(serial, op, "si104_spi_control")
 
 
-@mcp.tool()
+# No ToolAnnotations on purpose: the passthrough can do anything the
+# firmware allows, so promising read-only/idempotent would be wrong.
+@mcp.tool(title="Raw vendor request passthrough")
 def si104_raw_request(
     serial: Optional[str] = None,
     interface: int = 4,
     command: int = 0,
     payload_hex: str = "",
-) -> dict:
+) -> RawRequestOut:
     """Raw vendor request passthrough to the control interface (interface 4) for firmware commands without a dedicated tool.
 
     Known IDs: I2C CONFIG=0x10, MASTER_XFER=0x11, SLAVE_READ=0x12,
@@ -906,7 +1049,7 @@ def si104_raw_request(
     return _with_device(serial, op, "si104_raw_request")
 
 
-@mcp.tool()
+@mcp.tool(title="I2C slave buffer & mailbox")
 def si104_i2c_slave(
     serial: Optional[str] = None,
     channel: int = 0,
@@ -921,7 +1064,7 @@ def si104_i2c_slave(
     data_16bit: bool = False,
     data_big_endian: bool = False,
     timeout_ms: int = 1000,
-) -> dict:
+) -> SlaveOut:
     """I2C slave buffer and mailbox FIFO access on one channel (raw/mailbox/register logic modes).
 
     Verified on hardware: the firmware keeps channel config across USB
