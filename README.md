@@ -8,7 +8,7 @@
 
 ## 特性
 
-- **stdio 无状态**：每次工具调用原子化 `open → 操作 → close`，只在调用期间占用 dongle（毫秒级），与 uTools 主程序共存，无需常驻进程。同一时间只服务一个客户端，并发会撞 USB 互斥（瞬时 `-2/-3` 服务端已内置 ≤2 次 100ms 自动重试，仅重试 open、绝不重试总线操作；极端并发仍可能报错，重试即可）
+- **双传输无状态**：stdio（AI 客户端）+ 可选 HTTP（网页控制台）；每次工具调用原子化 `open → 操作 → close`，只在调用期间占用 dongle（毫秒级），与 uTools 主程序共存，无需常驻进程。同一时间只服务一个客户端，并发会撞 USB 互斥（瞬时 `-2/-3` 服务端已内置 ≤2 次 100ms 自动重试，仅重试 open、绝不重试总线操作；极端并发仍可能报错，重试即可）
 - **全 API 覆盖**：14 个工具，含 `si104_raw_request` 万能透传兜底（固件私有命令）、`si104_vcc_control` 供电控制与 `si104_i2c_control` 通道恢复
 - **结构化错误**：`{error, code, code_meaning, backend_code, firmware_status, completion_unknown}`；`code_meaning` 按 SDK Guide §08 官方错误码表给出静态含义，**`completion_unknown=true` 时总线操作可能已发生，禁止盲目重发**（附 `retry_hint`）
 - **文档对齐**：容量上限（i2c TX≤504、寄存器读≤512 但自增按 256 页翻页、寄存器写≤504 含指针字节、raw request 请求/回复各≤512、SPI TX≤504、长发送 ≤1024 word）、速率预设（mode 0/1/2 = 100k/400k/1M，`bus_hz` 仅 mode=3 生效）、状态解码（SPI_TX_STATUS BB5HI、I2C GET_STATUS 32 B）均按官方《SDK Guide》/《Technical Manual》实现（容量与错误码已对照 SDK 1.0.5 官方文档复核）
@@ -122,6 +122,30 @@ App 的 MCP 设置选自定义（stdio）：命令 = `<venv>\Scripts\python.exe`
 ```bat
 npx @modelcontextprotocol/inspector .venv\Scripts\python.exe server.py
 ```
+
+### 网页控制台（HTTP）
+
+不经任何客户端，浏览器直接操作设备——与 AI 客户端共用同一套工具、校验和错误通道：
+
+```bash
+# Linux/macOS
+SI104_MCP_TRANSPORT=http .venv/bin/python server.py     # 默认 http://127.0.0.1:8800
+```
+```bat
+:: Windows (cmd)
+set SI104_MCP_TRANSPORT=http && .venv\Scripts\python.exe server.py
+```
+
+打开 http://127.0.0.1:8800：左侧自动列出全部 14 个工具 → 填参（schema 默认值与参数说明就位）→ 调用 → 结构化结果渲染。
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `SI104_MCP_TRANSPORT` | `stdio` | 设为 `http` 启用网页控制台 |
+| `SI104_MCP_HOST` | `127.0.0.1` | 监听地址；绑非回环地址会在日志大声警告 |
+| `SI104_MCP_PORT` | `8800` | 监听端口 |
+| `SI104_MCP_TOKEN` | 未设 | 设置后 `/mcp` 要求 `Authorization: Bearer <token>`，控制台页面顶部粘贴即可 |
+
+**安全边界**：默认仅监听本机回环；控制台可执行包括 `si104_raw_request` 在内的全部工具——请勿在不受信任的网络暴露，跨机访问务必设置 `SI104_MCP_TOKEN`。验证：`python http_test.py`(10 项，本机跑；CI 保持 stdio 套件)。
 
 ## 使用方法
 

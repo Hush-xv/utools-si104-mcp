@@ -58,6 +58,7 @@ LOG = logging.getLogger("si104-mcp")
 
 mcp = FastMCP(
     "si104",
+    stateless_http=True,  # web-console transport: no session affinity (stdio ignores this)
     instructions=(
         "UTools-SI104 USB-to-SPI/I2C adapter server. Binary data crosses the "
         "tool boundary as lowercase hex strings without separators. serial=None "
@@ -1322,8 +1323,217 @@ def si104_i2c_slave(
     return _with_device(serial, op, "si104_i2c_slave")
 
 
+_CONSOLE_HTML = """<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>SI104 工具控制台</title>
+<style>
+  body { font: 14px/1.5 -apple-system, "Segoe UI", sans-serif; margin: 0; background: #14161a; color: #d7dae0; }
+  header { padding: 10px 16px; background: #1d2026; display: flex; gap: 8px; align-items: center; }
+  header b { margin-right: 12px; }
+  main { display: flex; height: calc(100vh - 46px); }
+  #tools { width: 300px; overflow-y: auto; border-right: 1px solid #2a2e35; }
+  #tools button { display: block; width: 100%; text-align: left; background: none; border: 0;
+                  color: inherit; padding: 8px 16px; cursor: pointer; }
+  #tools button:hover, #tools button.on { background: #2a2e35; }
+  #tools small { color: #8a919c; }
+  #pane { flex: 1; padding: 16px 24px; overflow-y: auto; }
+  label { display: block; margin: 10px 0 2px; }
+  label i { color: #e5c07b; font-style: normal; font-size: 12px; }
+  input, select { background: #1d2026; color: inherit; border: 1px solid #2a2e35;
+                  border-radius: 4px; padding: 5px 8px; min-width: 260px; }
+  button.act { background: #2b6cb0; border: 0; color: #fff; padding: 7px 18px;
+               border-radius: 4px; cursor: pointer; margin-top: 14px; }
+  pre { background: #0f1114; border: 1px solid #2a2e35; border-radius: 4px;
+        padding: 10px; white-space: pre-wrap; word-break: break-all; }
+  .err { color: #ff6b6b; }
+  .ok { color: #7ee787; }
+  .hint { color: #8a919c; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <b>SI104 工具控制台</b>
+  <input id="auth" type="password" placeholder="Bearer token(未设 SI104_MCP_TOKEN 则留空)">
+  <button class="act" onclick="boot()">连接</button>
+  <span id="status" class="hint">未连接</span>
+</header>
+<main>
+  <div id="tools"></div>
+  <div id="pane"><p class="hint">连接后从左侧选择工具。</p></div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+let nextId = 1, sessionId = null, toolList = [], current = null;
+
+const baseHeaders = () => ({
+  "Content-Type": "application/json",
+  "Accept": "application/json, text/event-stream",
+  ...( $("auth").value ? { "Authorization": "Bearer " + $("auth").value } : {} ),
+  ...( sessionId ? { "mcp-session-id": sessionId } : {} ),
+});
+
+async function rpc(method, params, isNotify) {
+  const body = { jsonrpc: "2.0", method };
+  if (!isNotify) body.id = nextId++;
+  if (params) body.params = params;
+  const res = await fetch("/mcp", { method: "POST", headers: baseHeaders(), body: JSON.stringify(body) });
+  const sid = res.headers.get("mcp-session-id");
+  if (sid) sessionId = sid;
+  if (isNotify) return null;
+  const ct = res.headers.get("content-type") || "";
+  let payload = null;
+  if (ct.includes("text/event-stream")) {
+    const text = await res.text();
+    for (const line of text.split("\\n").reverse()) {
+      if (!line.startsWith("data:")) continue;
+      try { const j = JSON.parse(line.slice(5).trim()); if (j.id !== undefined) { payload = j; break; } } catch (e) {}
+    }
+  } else {
+    payload = await res.json();
+  }
+  if (!payload) throw new Error("no JSON-RPC payload in response");
+  if (payload.error) throw new Error(payload.error.message || JSON.stringify(payload.error));
+  return payload.result;
+}
+
+async function boot() {
+  $("status").textContent = "连接中…";
+  sessionId = null;
+  try {
+    await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {},
+                              clientInfo: { name: "web-console", version: "1.1.0" } });
+    await rpc("notifications/initialized", null, true);
+    const t = await rpc("tools/list", {});
+    toolList = t.tools;
+    $("tools").innerHTML = toolList.map((tl, i) =>
+      `<button onclick="pick(${i})"><b>${tl.name}</b><br><small>${(tl.title || "").replace(/</g, "&lt;")}</small></button>`).join("");
+    $("status").textContent = `已连接,${toolList.length} 个工具`;
+    $("status").className = "ok";
+  } catch (e) {
+    $("status").textContent = "失败: " + e.message;
+    $("status").className = "err";
+  }
+}
+
+function pick(i) {
+  current = toolList[i];
+  document.querySelectorAll("#tools button").forEach((b, j) => b.classList.toggle("on", j === i));
+  const props = (current.inputSchema || {}).properties || {};
+  const req = new Set((current.inputSchema || {}).required || []);
+  let html = `<h3>${current.name}</h3><p class="hint">${(current.description || "").replace(/</g, "&lt;").replace(/\\n/g, "<br>")}</p>`;
+  for (const [k, v] of Object.entries(props)) {
+    const desc = (v.description || "").replace(/</g, "&lt;");
+    const mark = req.has(k) ? " *" : "";
+    html += `<label>${k}${mark} <i>${desc}</i></label>`;
+    if (v.enum) {
+      html += `<select id="f_${k}" data-t="${v.type || "string"}">` +
+        v.enum.map(e => `<option ${e === v.default ? "selected" : ""}>${e}</option>`).join("") + `</select>`;
+    } else if (v.type === "boolean") {
+      html += `<input id="f_${k}" type="checkbox" ${v.default ? "checked" : ""}>`;
+    } else if (v.type === "integer" || v.type === "number") {
+      html += `<input id="f_${k}" type="number" value="${v.default ?? ""}">`;
+    } else {
+      html += `<input id="f_${k}" type="text" value="${String(v.default ?? "").replace(/"/g, "&quot;")}">`;
+    }
+  }
+  html += `<button class="act" onclick="callTool()">调用 ${current.name}</button>
+           <div id="out"></div>`;
+  $("pane").innerHTML = html;
+}
+
+function collect() {
+  const props = (current.inputSchema || {}).properties || {};
+  const args = {};
+  for (const [k, v] of Object.entries(props)) {
+    const el = $("f_" + k);
+    if (v.type === "boolean") { args[k] = el.checked; continue; }
+    const raw = (el.value ?? "").trim();
+    if (raw === "" && !("default" in v)) continue;  // 空且无默认 → 省略
+    if (v.type === "integer") args[k] = parseInt(raw || "0", 10);
+    else if (v.type === "number") args[k] = parseFloat(raw || "0");
+    else args[k] = raw;
+  }
+  return args;
+}
+
+async function callTool() {
+  $("out").innerHTML = `<p class="hint">调用中…</p>`;
+  try {
+    const r = await rpc("tools/call", { name: current.name, arguments: collect() });
+    let text = r.structuredContent ? JSON.stringify(r.structuredContent, null, 2)
+                                   : (r.content?.[0]?.text || "");
+    try { text = JSON.stringify(JSON.parse(text), null, 2); } catch (e) {}
+    const cls = r.isError ? "err" : "ok";
+    $("out").innerHTML = `<p class="${cls}">${r.isError ? "执行失败 (isError=true)" : "成功"}</p><pre>${text.replace(/</g, "&lt;")}</pre>`;
+  } catch (e) {
+    $("out").innerHTML = `<p class="err">错误: ${String(e.message).replace(/</g, "&lt;")}</p>`;
+  }
+}
+</script>
+</body>
+</html>
+"""
+
+
+def _BearerGate(app, token):
+    """ASGI wrapper: /mcp requires 'Authorization: Bearer <token>'; the static
+    console page stays public (it holds no secrets, the token is user-supplied)."""
+
+    async def gated(scope, receive, send):
+        if scope["type"] == "http" and scope.get("path") == "/mcp":
+            headers = dict(scope.get("headers") or [])
+            auth = headers.get(b"authorization", b"").decode()
+            if auth != f"Bearer {token}":
+                await send({"type": "http.response.start", "status": 401,
+                            "headers": [(b"content-type", b"text/plain")]})
+                await send({"type": "http.response.body", "body": b"unauthorized"})
+                return
+        await app(scope, receive, send)
+
+    return gated
+
+
+def _console_response(request):  # noqa: ARG001 — Starlette passes the Request
+    from starlette.responses import HTMLResponse
+
+    return HTMLResponse(_CONSOLE_HTML)
+
+
+def _run_http():
+    """Streamable-HTTP entry for the web console (README: 网页控制台).
+
+    SI104_MCP_HOST defaults to 127.0.0.1 and SI104_MCP_PORT to 8800. The
+    console can drive hardware — including si104_raw_request — so binding
+    outside loopback is allowed but loudly warned about; SI104_MCP_TOKEN,
+    when set, gates /mcp behind 'Authorization: Bearer <token>'.
+    """
+    import uvicorn
+    from starlette.routing import Route
+
+    host = os.environ.get("SI104_MCP_HOST", "127.0.0.1")
+    port = int(os.environ.get("SI104_MCP_PORT", "8800"))
+    token = os.environ.get("SI104_MCP_TOKEN") or None
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        LOG.warning(
+            "[http] binding %s:%d — the console (including si104_raw_request) is "
+            "network-reachable; set SI104_MCP_TOKEN or restrict access!", host, port
+        )
+    app = mcp.streamable_http_app()
+    app.router.routes.append(Route("/", _console_response, methods=["GET"]))
+    if token:
+        app = _BearerGate(app, token)
+    LOG.info("[http] console: http://%s:%d/  |  mcp: /mcp%s",
+             host, port, "  (token required)" if token else "")
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
 def main():
-    mcp.run()  # stdio
+    if os.environ.get("SI104_MCP_TRANSPORT", "stdio").strip().lower() == "http":
+        _run_http()
+    else:
+        mcp.run()  # stdio
 
 
 if __name__ == "__main__":
