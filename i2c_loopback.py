@@ -8,7 +8,7 @@ import struct
 import sys
 import time
 
-from si104 import Device, I2cConfig, Error
+from si104 import Device, I2cConfig
 
 SERIAL = sys.argv[1] if len(sys.argv) > 1 else None
 

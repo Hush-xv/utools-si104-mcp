@@ -6,7 +6,6 @@ speed extremes (50k / 40M).
 Stress: sustained transaction counts, USB open/close churn, long-TX runs.
 Timing and pass rates are reported; no assertion aborts the run.
 """
-import json
 import struct
 import time
 

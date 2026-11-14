@@ -1,10 +1,14 @@
 """Smoke test: spawn server.py over stdio, initialize, list tools, call a few.
 
 No hardware required for the no-device paths; with the dongle plugged in
-it also exercises the real open path.
+it also exercises the real open path. Without the vendor wheel the server
+falls back to si104_stub (STUB MODE) so the tool surface stays testable
+anywhere — behavior then comes from the test double, not firmware.
 """
 import asyncio
+import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -13,9 +17,17 @@ from mcp.client.stdio import stdio_client
 
 SERVER = Path(__file__).with_name("server.py")
 
+# Probe without importing: the vendor wheel loads a native DLL as a side effect.
+HAVE_REAL_SDK = importlib.util.find_spec("si104") is not None
+
 
 async def main() -> int:
-    params = StdioServerParameters(command=sys.executable, args=[str(SERVER)])
+    env = None
+    if not HAVE_REAL_SDK:
+        print("NOTE: vendor wheel not installed — running server in STUB MODE "
+              "(si104_stub test double, not real firmware)")
+        env = {**os.environ, "SI104_MCP_STUB": "1"}
+    params = StdioServerParameters(command=sys.executable, args=[str(SERVER)], env=env)
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             init = await session.initialize()
@@ -29,6 +41,7 @@ async def main() -> int:
                 "si104_spi_tx_words", "si104_spi_control", "si104_i2c_transfer",
                 "si104_i2c_read_regs", "si104_i2c_write_regs", "si104_i2c_scan",
                 "si104_i2c_slave", "si104_raw_request", "si104_read_vcc",
+                "si104_vcc_control",
             }
             missing = required - set(names)
             assert not missing, f"missing tools: {missing}"

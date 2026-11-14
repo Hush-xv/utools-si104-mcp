@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
 import struct
 import sys
 import threading
@@ -16,7 +17,32 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
-from si104 import Device, SpiConfig, I2cConfig, Error
+try:
+    from si104 import Device, SpiConfig, I2cConfig, Error
+except ImportError:
+    if os.environ.get("SI104_MCP_STUB") == "1":
+        # Test-double mode for unit_test/smoke_test/CI: no vendor wheel, the
+        # tool surface runs against si104_stub. Never used in production.
+        import si104_stub as _stub
+
+        Device, SpiConfig, I2cConfig, Error = (
+            _stub.Device,
+            _stub.SpiConfig,
+            _stub.I2cConfig,
+            _stub.Error,
+        )
+        print(
+            "si104-mcp: STUB MODE — using si104_stub test double, no real dongle",
+            file=sys.stderr,
+        )
+    else:
+        sys.stderr.write(
+            "si104-mcp: the vendor SDK wheel is missing. Install it into this "
+            "environment first (the same python that runs server.py), see README:\n"
+            "  pip install <sdk-package>/python/wheels/utools_si104-*.whl\n"
+            "  pip install -r requirements.txt\n"
+        )
+        raise SystemExit(1) from None
 
 # Logging goes to stderr; stdout is reserved for the MCP protocol on stdio.
 logging.basicConfig(
@@ -33,12 +59,15 @@ mcp = FastMCP(
         "tool boundary as lowercase hex strings without separators. serial=None "
         "targets the first dongle found; run si104_enumerate when unsure. Every "
         "call opens and closes the device atomically. Payload caps: I2C master "
-        "TX 504 B, RX 512 B (506 with VCC monitor), register read 256 B, "
-        "register write 508 B, SPI 512 B; larger transfers must be chunked. "
-        "Device errors come back as a dict with code/backend_code/"
+        "TX 504 B, RX 512 B (506 with VCC monitor), register read 512 B per "
+        "transfer (the mirror auto-increment is page-scoped to 256 B), "
+        "register write 508 B, SPI TX 504 B / RX 512 B; larger transfers must "
+        "be chunked. Device errors come back as a dict with code/backend_code/"
         "firmware_status; if completion_unknown is true the transfer may have "
-        "hit the bus — verify device state before re-sending. Run "
-        "si104_enumerate first if a call says the device is missing."
+        "hit the bus — verify device state before re-sending. firmware_status="
+        "11 (NO_POWER) means the shared VCC output is off: enable it once with "
+        "si104_vcc_control. Run si104_enumerate first if a call says the "
+        "device is missing."
     ),
 )
 
@@ -96,6 +125,32 @@ def _decode_i2c_status(raw):
     return d
 
 
+def _decode_vcc_reply(raw):
+    """VCC_THRESHOLD (0x1F) empty-query reply: u8 output/persist enable,
+    u16 threshold_mv/adc_mv, u8 fail_reason/op_result, u16 measured_mv —
+    10 bytes. None if the reply is too short."""
+    if len(raw) < 10:
+        return None
+    (
+        output_enabled,
+        persist_enable,
+        threshold_mv,
+        adc_mv,
+        fail_reason,
+        op_result,
+        measured_mv,
+    ) = struct.unpack("<BBHHBBH", raw[:10])
+    return {
+        "output_enabled": bool(output_enabled),
+        "persist_enable": bool(persist_enable),
+        "threshold_mv": threshold_mv,
+        "adc_mv": adc_mv,
+        "fail_reason": fail_reason,
+        "op_result": op_result,
+        "measured_mv": measured_mv,
+    }
+
+
 def _parse_hex(value, name):
     """Accept '', None, 'deadbeef', '0xDEAD BEEF' -> bytes. ValueError on bad hex."""
     if value is None:
@@ -107,16 +162,21 @@ def _parse_hex(value, name):
         raise ValueError(f"{name} is not valid hex: {value!r}") from None
 
 
-def _check_payload(name, size):
-    if size > MAX_PAYLOAD:
+def _check_payload(name, size, cap=MAX_PAYLOAD):
+    if size > cap:
         raise ValueError(
-            f"{name} is {size} bytes; one call carries at most 512 bytes, split into chunks"
+            f"{name} is {size} bytes; one call carries at most {cap} bytes, split into chunks"
         )
 
 
 def _check_i2c_args(channel, address, timeout_ms, bus_hz, mode, addr_10bit=False):
     """Entry validation per TM section 4/8: channels 0-3, 7/10-bit address
-    range, u16 timeout (0 = firmware default 1000 ms), custom-mode speed."""
+    range, u16 timeout (0 = firmware default 1000 ms), speed-mode selector,
+    custom-mode speed."""
+    if mode not in (0, 1, 2, 3):
+        raise ValueError(
+            f"mode must be 0 (100k) / 1 (400k) / 2 (1M) / 3 (custom bus_hz), got {mode}"
+        )
     if not 0 <= channel <= 3:
         raise ValueError(f"channel must be 0..3 (TM section 4), got {channel}")
     if not 0 <= address <= (1023 if addr_10bit else 127):
@@ -130,6 +190,15 @@ def _check_i2c_args(channel, address, timeout_ms, bus_hz, mode, addr_10bit=False
     if mode == 3 and not 10_000 <= bus_hz <= 1_000_000:
         raise ValueError(
             f"custom-mode bus_hz must be 10_000..1_000_000 (TM section 4), got {bus_hz}"
+        )
+
+
+def _check_spi_args(sclk_hz, cpol, cpha):
+    if sclk_hz <= 0:
+        raise ValueError(f"sclk_hz must be positive, got {sclk_hz}")
+    if cpol not in (0, 1) or cpha not in (0, 1):
+        raise ValueError(
+            f"cpol and cpha must each be 0 or 1, got cpol={cpol}, cpha={cpha}"
         )
 
 
@@ -191,8 +260,8 @@ def _with_device(serial, operate, name):
         if e.firmware_status == 11:  # TM section 5: NO_POWER
             result["hint"] = (
                 "NO_POWER: the shared VCC output is off. Enable it once per "
-                "power-up with si104_raw_request(interface=I2C channel, "
-                "command=0x1E, payload_hex='0100'), then retry"
+                "power-up with si104_vcc_control(channel=<I2C channel>, "
+                "enable=true), then retry"
             )
     except ValueError as e:
         LOG.warning("#%d [param] %s: %s", cid, name, e)
@@ -305,8 +374,7 @@ def si104_spi_transfer(
         )
     if not 0 <= rx_size <= MAX_PAYLOAD:
         raise ValueError(f"rx_size must be 0..512, got {rx_size}")
-    if sclk_hz <= 0:
-        raise ValueError(f"sclk_hz must be positive, got {sclk_hz}")
+    _check_spi_args(sclk_hz, cpol, cpha)
 
     def op(dev):
         dev.spi_configure(
@@ -416,7 +484,10 @@ def si104_i2c_read_regs(
     Verified on hardware against a register-mode slave over the ch0<->ch1
     loopback. reg is 0..255 with reg_addr_16bit=false (single pointer byte);
     with reg_addr_16bit=true reg is 0..65535 and the pointer phase carries
-    two bytes MSB-first. size is at most 512 bytes (the transfer rx cap).
+    two bytes MSB-first. size is at most 512 bytes (the transfer rx cap);
+    note the auto-increment is page-scoped to 256 B (TM section 8) — split
+    larger reads per page like si104_i2c_write_regs when the target device
+    follows SI104's own page semantics.
     mode: 0 standard 100k / 1 fast 400k / 2 fast-plus 1M / 3 custom (bus_hz
     applies only in mode 3).
     """
@@ -575,7 +646,7 @@ def si104_read_vcc(serial: Optional[str] = None, channel: int = 0) -> dict:
     op_result (0 = success; op_result=0 alone does not prove a power request
     took effect). output_enabled=false + transfers failing with NO_POWER
     (firmware_status=11) means the rail is off: enable via
-    si104_raw_request(channel, 0x1E, '0100').
+    si104_vcc_control(channel, enable=true).
     """
     _log_call("si104_read_vcc", serial=serial, channel=channel)
     if not 0 <= channel <= 3:
@@ -583,31 +654,53 @@ def si104_read_vcc(serial: Optional[str] = None, channel: int = 0) -> dict:
 
     def op(dev):
         raw = dev.request(channel, 0x1F)
-        if len(raw) < 10:
+        reply = _decode_vcc_reply(raw)
+        if reply is None:
             return {
                 "error": f"VCC query reply too short ({len(raw)} bytes)",
                 "raw_hex": raw.hex(),
             }
-        (
-            output_enabled,
-            persist_enable,
-            threshold_mv,
-            adc_mv,
-            fail_reason,
-            op_result,
-            measured_mv,
-        ) = struct.unpack("<BBHHBBH", raw[:10])
-        return {
-            "output_enabled": bool(output_enabled),
-            "persist_enable": bool(persist_enable),
-            "threshold_mv": threshold_mv,
-            "adc_mv": adc_mv,
-            "fail_reason": fail_reason,
-            "op_result": op_result,
-            "measured_mv": measured_mv,
-        }
+        return reply
 
     return _with_device(serial, op, "si104_read_vcc")
+
+
+@mcp.tool()
+def si104_vcc_control(
+    serial: Optional[str] = None,
+    channel: int = 0,
+    enable: bool = True,
+    persist: bool = False,
+) -> dict:
+    """Enable or disable the shared VCC output that feeds the I2C pull-ups (VCC_SET=0x1E: u8 enable + u8 save).
+
+    This is the NO_POWER (firmware_status=11) recovery path: the shared
+    output defaults to off at power-up; enabling it once per power-up is
+    hardware-verified (VCC ≈ 3.1 V). persist=true asks the firmware to keep
+    the setting across dongle power cycles. channel selects the I2C
+    interface serving the command (VCC lives on I2C interfaces 0-3, not the
+    SPI/maintenance faces). The result is verified with an immediate 0x1F
+    query, so the returned output_enabled reflects device state rather than
+    just the command ack.
+    """
+    if not 0 <= channel <= 3:
+        raise ValueError(f"channel must be 0..3, got {channel}")
+    _log_call(
+        "si104_vcc_control", serial=serial, channel=channel, enable=enable, persist=persist
+    )
+
+    def op(dev):
+        dev.request(channel, 0x1E, bytes([1 if enable else 0, 1 if persist else 0]))
+        raw = dev.request(channel, 0x1F)
+        reply = _decode_vcc_reply(raw)
+        if reply is None:
+            return {
+                "error": f"VCC query reply too short after VCC_SET ({len(raw)} bytes)",
+                "raw_hex": raw.hex(),
+            }
+        return {"requested_enable": enable, "requested_persist": persist, **reply}
+
+    return _with_device(serial, op, "si104_vcc_control")
 
 
 @mcp.tool()
@@ -634,8 +727,7 @@ def si104_spi_tx_words(
     tx = _parse_hex(tx_hex, "tx_hex")
     if data_bits not in (8, 16, 32):
         raise ValueError(f"data_bits must be 8/16/32 for long TX, got {data_bits}")
-    if sclk_hz <= 0:
-        raise ValueError(f"sclk_hz must be positive, got {sclk_hz}")
+    _check_spi_args(sclk_hz, cpol, cpha)
     step = data_bits // 8
     if not tx or len(tx) % step:
         raise ValueError(f"tx_hex length must be a non-zero multiple of {step}, got {len(tx)} bytes")
@@ -707,7 +799,8 @@ def si104_raw_request(
     if not 0 <= command <= 255:
         raise ValueError(f"command must be 0..255, got {command}")
     payload = _parse_hex(payload_hex, "payload_hex")
-    _check_payload("payload_hex", len(payload))
+    # Vendor request payload cap is 508 B (Guide section 8; 512 is the binding cap).
+    _check_payload("payload_hex", len(payload), 508)
     _log_call("si104_raw_request", serial=serial, interface=interface, command=hex(command), payload_bytes=len(payload))
 
     def op(dev):
@@ -812,5 +905,9 @@ def si104_i2c_slave(
     return _with_device(serial, op, "si104_i2c_slave")
 
 
-if __name__ == "__main__":
+def main():
     mcp.run()  # stdio
+
+
+if __name__ == "__main__":
+    main()
