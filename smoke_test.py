@@ -64,6 +64,14 @@ async def main() -> int:
             assert enum_tool.annotations and enum_tool.annotations.readOnlyHint is True
             assert enum_tool.title == "List SI104 dongles on USB"
 
+            # Input-side conformance: enum-constrained choices and per-parameter
+            # descriptions (the model sees the inputSchema, not the docstring).
+            ctl = next(t for t in tools.tools if t.name == "si104_i2c_control")
+            assert "enum" in ctl.inputSchema["properties"]["action"], "action enum missing"
+            assert "description" in ctl.inputSchema["properties"]["channel"]
+            tw = next(t for t in tools.tools if t.name == "si104_spi_tx_words")
+            assert tw.inputSchema["properties"]["data_bits"].get("enum") == [8, 16, 32]
+
             res = await session.call_tool("si104_enumerate", {})
             payload = parse(res)
             print("enumerate:", payload)

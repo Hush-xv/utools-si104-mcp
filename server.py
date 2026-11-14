@@ -14,12 +14,12 @@ import struct
 import sys
 import threading
 import time
-from typing import Optional
+from typing import Annotated, Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 try:
     from si104 import Device, SpiConfig, I2cConfig, Error
@@ -195,6 +195,36 @@ class SlaveOut(_ErrBase):
     written_bytes: int | None = None
     pushed_bytes: int | None = None
     status: dict | None = None
+
+
+# Shared parameter schemas: the inputSchema is what the model sees when it
+# picks and fills a tool (reference: awslabs/mcp FastMCP servers), so every
+# parameter carries a Field description and enum-like choices use Literal.
+_Serial = Annotated[
+    Optional[str],
+    Field(description="USB serial number; None targets the first dongle (si104_enumerate lists them)"),
+]
+_Channel = Annotated[
+    int,
+    Field(description="I2C channel 0..3 — each channel is its own USB interface (TM section 4)"),
+]
+_BusMode = Annotated[
+    Literal[0, 1, 2, 3],
+    Field(description="Speed preset: 0=100k, 1=400k, 2=1M, 3=custom bus_hz"),
+]
+_BusHz = Annotated[
+    int,
+    Field(description="Clock in custom mode (mode=3), 10_000..1_000_000 Hz; ignored otherwise"),
+]
+_I2cTimeout = Annotated[
+    int,
+    Field(description="u16 bus timeout 0..65535 ms; 0 = firmware default (1000 ms)"),
+]
+_HexBytes = Annotated[
+    str,
+    Field(description="Hex bytes ('deadbeef', optional 0x prefix / spaces); '' = none"),
+]
+_SpiTimeout = Annotated[int, Field(description="Bus timeout 1..60000 ms")]
 
 # Manual LM-SI104-TM-001 §7.2: SPI_TX_STATUS reply is BB5HI (16 bytes).
 _SPI_TX_STATE = {
@@ -460,7 +490,7 @@ def _with_device(serial, operate, name):
 
 @mcp.tool(
     title="List SI104 dongles on USB",
-    annotations=ToolAnnotations(readOnlyHint=True),
+    annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
 def si104_enumerate() -> EnumerateOut:
     """List SI104 dongles over USB. Returns {count, devices:[{vid,pid,bus,address,serial}]}. An empty list means nothing is plugged in."""
@@ -471,9 +501,12 @@ def si104_enumerate() -> EnumerateOut:
 
 @mcp.tool(
     title="Read-only device diagnostics",
-    annotations=ToolAnnotations(readOnlyHint=True),
+    annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
-def si104_device_info(serial: Optional[str] = None, channel: int = 0) -> DeviceInfoOut:
+def si104_device_info(
+    serial: _Serial = None,
+    channel: _Channel = 0,
+) -> DeviceInfoOut:
     """Read-only diagnostics: identity/firmware/runtime plus per-face capabilities, limits, the decoded 32-byte I2C channel status and the selected channel's VCC rail state.
 
     The dongle exposes functional USB interfaces (TM section 1): 0-3 = I2C
@@ -523,27 +556,38 @@ def si104_device_info(serial: Optional[str] = None, channel: int = 0) -> DeviceI
 
 @mcp.tool(title="Atomic SPI full-duplex transfer")
 def si104_spi_transfer(
-    serial: Optional[str] = None,
-    tx_hex: str = "",
-    rx_size: int = 0,
-    sclk_hz: int = 1_000_000,
-    data_bits: int = 8,
-    cpol: int = 0,
-    cpha: int = 0,
-    lsb_first: bool = False,
-    cs_active_high: bool = False,
-    timeout_ms: int = 1000,
+    serial: _Serial = None,
+    tx_hex: _HexBytes = "",
+    rx_size: Annotated[
+        int, Field(description="Bytes to clock in during the same transaction, 0..512; 0 = TX-only")
+    ] = 0,
+    sclk_hz: Annotated[
+        int, Field(description="SCLK 50_000..40_000_000 Hz (quantized by the clock divider)")
+    ] = 1_000_000,
+    data_bits: Annotated[
+        int, Field(description="Word width 1..32; >8 requires whole-word-aligned tx/rx lengths")
+    ] = 8,
+    cpol: Annotated[int, Field(description="Clock polarity 0/1 (with cpha selects SPI mode 0-3)")] = 0,
+    cpha: Annotated[int, Field(description="Clock phase 0/1")] = 0,
+    lsb_first: Annotated[bool, Field(description="True = least-significant bit first (default MSB)")] = False,
+    cs_active_high: Annotated[
+        bool, Field(description="True = active-high CS (host single-line I/O only, SDK Guide §6)")
+    ] = False,
+    timeout_ms: _SpiTimeout = 1000,
 ) -> TransferOut:
     """One atomic SPI transaction: configure bus, full-duplex transfer, close.
+
+    Use when: one-shot exchange with a known device — read a sensor, verify
+    an echo, poke a register.
+    Do NOT use when: rx is not needed and the payload exceeds 504 B — use
+    si104_spi_tx_words (staged long-TX, up to 1024 words) instead.
 
     tx_hex is clocked out; rx_size bytes are clocked in during the same
     transaction (lengths are independent: TX-only = rx_size 0, RX-only =
     empty tx_hex). tx is at most 504 bytes and rx_size at most 512.
     Firmware detail (hardware-verified): >504B TX-only transfers get
     auto-routed to the long-TX path (which is TX-only); this tool caps tx
-    at 504B for predictable single-command behavior — use
-    si104_spi_tx_words for larger sends.
-    Typical: data_bits 8/16/32, cpol/cpha 0 or 1, sclk_hz 1_000..10_000_000.
+    at 504B for predictable single-command behavior.
     """
     _log_call(
         "si104_spi_transfer",
@@ -607,25 +651,37 @@ def _i2c_config(address, bus_hz, timeout_ms, mode=0, addr_10bit=False):
 
 @mcp.tool(title="Atomic I2C master transfer")
 def si104_i2c_transfer(
-    serial: Optional[str] = None,
-    channel: int = 0,
-    address: int = 0x30,
-    tx_hex: str = "",
-    rx_size: int = 0,
-    bus_hz: int = 100_000,
-    mode: int = 0,
-    addr_10bit: bool = False,
-    monitor_vcc: bool = False,
-    timeout_ms: int = 1000,
+    serial: _Serial = None,
+    channel: _Channel = 0,
+    address: Annotated[
+        int, Field(description="7-bit target address 0..127 (0..1023 with addr_10bit)")
+    ] = 0x30,
+    tx_hex: _HexBytes = "",
+    rx_size: Annotated[
+        int,
+        Field(description="Bytes to read after a repeated START, 0..512 (0..506 with monitor_vcc); 0 = write-only"),
+    ] = 0,
+    bus_hz: _BusHz = 100_000,
+    mode: _BusMode = 0,
+    addr_10bit: Annotated[bool, Field(description="True = 10-bit addressing")] = False,
+    monitor_vcc: Annotated[
+        bool,
+        Field(description="True adds a 'vcc' dict to the result; RX cap drops to 506 B"),
+    ] = False,
+    timeout_ms: _I2cTimeout = 1000,
 ) -> TransferOut:
     """One atomic I2C master transaction: configure, transfer, close.
 
+    Use when: raw control over the wire — devices whose protocol is not a
+    simple register map, or a pure read (empty tx_hex + rx_size>0).
+    Do NOT use when: the target has a register pointer protocol —
+    si104_i2c_read_regs / si104_i2c_write_regs do the pointer phase for you.
+
     Writes tx_hex then reads rx_size bytes in one sequence
     (START addr W, tx, repeated-START addr R, rx, STOP; firmware-managed).
-    Empty tx_hex + rx_size>0 = pure read. mode: 0 standard 100k / 1 fast 400k /
-    2 fast-plus 1M / 3 custom (bus_hz applies only in mode 3). monitor_vcc=true
-    adds a 'vcc' dict {adc_mv, threshold_mv, adc_valid, output_enabled} —
-    the monitor only samples; it does not enable the output supply (Guide §7).
+    monitor_vcc=true adds a 'vcc' dict {adc_mv, threshold_mv, adc_valid,
+    output_enabled} — the monitor only samples; it does not enable the
+    output supply (Guide §7).
     """
     _log_call(
         "si104_i2c_transfer",
@@ -666,17 +722,29 @@ def si104_i2c_transfer(
 
 @mcp.tool(title="I2C register read")
 def si104_i2c_read_regs(
-    serial: Optional[str] = None,
-    channel: int = 0,
-    address: int = 0x30,
-    reg: int = 0,
-    size: int = 1,
-    bus_hz: int = 100_000,
-    mode: int = 0,
-    reg_addr_16bit: bool = False,
-    timeout_ms: int = 1000,
+    serial: _Serial = None,
+    channel: _Channel = 0,
+    address: Annotated[
+        int, Field(description="7-bit target address 0..127 (0..1023 with addr_10bit)")
+    ] = 0x30,
+    reg: Annotated[
+        int, Field(description="Register address 0..255 (0..65535 with reg_addr_16bit)")
+    ] = 0,
+    size: Annotated[
+        int, Field(description="Bytes to read, 1..512 (auto-increment is page-scoped to 256 B)")
+    ] = 1,
+    bus_hz: _BusHz = 100_000,
+    mode: _BusMode = 0,
+    reg_addr_16bit: Annotated[
+        bool, Field(description="True = 16-bit register pointer, 2 bytes MSB-first")
+    ] = False,
+    timeout_ms: _I2cTimeout = 1000,
 ) -> RegsReadOut:
     """Master register read: write the register pointer then repeated-START read, one atomic transaction.
+
+    Use when: the target speaks the classic register protocol (write pointer,
+    repeated-START read) — sensors, EEPROMs, SI104's own register-mode slave.
+    Do NOT use when: the device needs raw sequences (use si104_i2c_transfer).
 
     Verified on hardware against a register-mode slave over the ch0<->ch1
     loopback. reg is 0..255 with reg_addr_16bit=false (single pointer byte);
@@ -685,8 +753,6 @@ def si104_i2c_read_regs(
     note the auto-increment is page-scoped to 256 B (TM section 8) — split
     larger reads per page like si104_i2c_write_regs when the target device
     follows SI104's own page semantics.
-    mode: 0 standard 100k / 1 fast 400k / 2 fast-plus 1M / 3 custom (bus_hz
-    applies only in mode 3).
     """
     _log_call(
         "si104_i2c_read_regs",
@@ -723,17 +789,29 @@ def si104_i2c_read_regs(
 
 @mcp.tool(title="I2C register write")
 def si104_i2c_write_regs(
-    serial: Optional[str] = None,
-    channel: int = 0,
-    address: int = 0x30,
-    reg: int = 0,
-    data_hex: str = "",
-    bus_hz: int = 100_000,
-    mode: int = 0,
-    reg_addr_16bit: bool = False,
-    timeout_ms: int = 1000,
+    serial: _Serial = None,
+    channel: _Channel = 0,
+    address: Annotated[
+        int, Field(description="7-bit target address 0..127 (0..1023 with addr_10bit)")
+    ] = 0x30,
+    reg: Annotated[
+        int, Field(description="Register address 0..255 (0..65535 with reg_addr_16bit)")
+    ] = 0,
+    data_hex: Annotated[
+        _HexBytes, Field(description="Register payload hex, at most 502 B (501 with 16-bit pointer)")
+    ] = "",
+    bus_hz: _BusHz = 100_000,
+    mode: _BusMode = 0,
+    reg_addr_16bit: Annotated[
+        bool, Field(description="True = 16-bit register pointer, 2 bytes MSB-first")
+    ] = False,
+    timeout_ms: _I2cTimeout = 1000,
 ) -> RegsWriteOut:
     """Master register write: pointer bytes + data in one write transaction (register auto-increment per target device protocol).
+
+    Use when: writing configuration/data to a register-protocol target.
+    Do NOT use when: the payload must not trigger the pointer phase (pure
+    mailbox/raw writes go through si104_i2c_transfer).
 
     Verified on hardware against a register-mode slave over the loopback.
     reg is 0..255 with reg_addr_16bit=false (single pointer byte); with
@@ -743,8 +821,7 @@ def si104_i2c_write_regs(
     the 256-byte page boundary (TM section 8, hardware-verified); split
     larger writes per page. data_hex is at most 502 bytes per call with
     8-bit pointers (504-byte transfer tx cap minus the pointer byte; 501
-    with 16-bit pointers). mode: 0 standard 100k / 1 fast 400k / 2 fast-plus
-    1M / 3 custom (bus_hz applies only in mode 3).
+    with 16-bit pointers).
     """
     _log_call(
         "si104_i2c_write_regs",
@@ -789,21 +866,25 @@ def si104_i2c_write_regs(
     annotations=ToolAnnotations(readOnlyHint=True),
 )
 def si104_i2c_scan(
-    serial: Optional[str] = None,
-    channel: int = 0,
-    bus_hz: int = 100_000,
-    mode: int = 0,
-    first: int = 0x08,
-    last: int = 0x77,
+    serial: _Serial = None,
+    channel: _Channel = 0,
+    bus_hz: _BusHz = 100_000,
+    mode: _BusMode = 0,
+    first: Annotated[int, Field(description="First 7-bit address to probe, 0x08..0x77")] = 0x08,
+    last: Annotated[int, Field(description="Last 7-bit address to probe, <=0x77")] = 0x77,
 ) -> ScanOut:
     """Probe 7-bit addresses first..last on one I2C channel and return the ones that ACK a 1-byte read. 7-bit only by design.
 
-    Use this before talking to an unknown bus: one call replaces ~112
-    individual probe attempts. Each probe uses a 50 ms timeout so an
-    empty bus sweeps in seconds. mode: 0 standard 100k / 1 fast 400k /
-    2 fast-plus 1M / 3 custom (bus_hz applies only in mode 3). Dongle-level
-    errors (device lost, busy) abort the scan; per-address errors count as
-    "no device here" — the protocol has no dedicated NACK code (TM §8).
+    Use when: first contact with an unknown bus — one call replaces ~112
+    individual probe attempts; also useful to verify wiring after enabling
+    VCC.
+    Do NOT use when: the target is 10-bit addressed (not supported here) or
+    you already know the address (go straight to si104_i2c_transfer).
+
+    Each probe uses a 50 ms timeout so an empty bus sweeps in seconds.
+    Dongle-level errors (device lost, busy) abort the scan; per-address
+    errors count as "no device here" — the protocol has no dedicated NACK
+    code (TM §8).
     """
     _log_call("si104_i2c_scan", serial=serial, channel=channel, bus_hz=bus_hz, mode=mode)
     if not 0x08 <= first <= last <= 0x77:
@@ -842,9 +923,12 @@ def si104_i2c_scan(
     annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True),
 )
 def si104_i2c_control(
-    serial: Optional[str] = None,
-    channel: int = 0,
-    action: str = "abort",
+    serial: _Serial = None,
+    channel: _Channel = 0,
+    action: Annotated[
+        Literal["abort", "reset"],
+        Field(description='abort = cancel in-flight transfer (0x14); reset = clear channel config (0x15)'),
+    ] = "abort",
 ) -> ControlOut:
     """I2C channel recovery: action="abort" cancels an in-flight transfer on the channel (ABORT=0x14); action="reset" resets the whole channel and clears its configuration (RESET=0x15).
 
@@ -872,9 +956,12 @@ def si104_i2c_control(
 
 @mcp.tool(
     title="Read VCC rail state",
-    annotations=ToolAnnotations(readOnlyHint=True),
+    annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
-def si104_read_vcc(serial: Optional[str] = None, channel: int = 0) -> VccStatusOut:
+def si104_read_vcc(
+    serial: _Serial = None,
+    channel: _Channel = 0,
+) -> VccStatusOut:
     """Read the shared VCC rail state via the documented VCC_THRESHOLD (0x1F) empty query — no bus traffic, works without a target device.
 
     channel selects the I2C interface that serves the query (VCC commands
@@ -900,10 +987,14 @@ def si104_read_vcc(serial: Optional[str] = None, channel: int = 0) -> VccStatusO
     annotations=ToolAnnotations(idempotentHint=True),
 )
 def si104_vcc_control(
-    serial: Optional[str] = None,
-    channel: int = 0,
-    enable: bool = True,
-    persist: bool = False,
+    serial: _Serial = None,
+    channel: _Channel = 0,
+    enable: Annotated[
+        bool, Field(description="True = turn the shared VCC output on (NO_POWER recovery)")
+    ] = True,
+    persist: Annotated[
+        bool, Field(description="True = firmware saves the setting across power cycles")
+    ] = False,
 ) -> VccControlOut:
     """Enable or disable the shared VCC output that feeds the I2C pull-ups (VCC_SET=0x1E: u8 enable + u8 save).
 
@@ -938,23 +1029,37 @@ def si104_vcc_control(
 
 @mcp.tool(title="SPI long send (words)")
 def si104_spi_tx_words(
-    serial: Optional[str] = None,
-    tx_hex: str = "",
-    data_bits: int = 16,
-    sclk_hz: int = 1_000_000,
-    cpol: int = 0,
-    cpha: int = 0,
-    lsb_first: bool = False,
-    cs_active_high: bool = False,
-    timeout_ms: int = 1000,
+    serial: _Serial = None,
+    tx_hex: Annotated[
+        _HexBytes,
+        Field(description="Word payload hex; non-zero multiple of data_bits/8, at most 1024 words"),
+    ] = "",
+    data_bits: Annotated[
+        Literal[8, 16, 32], Field(description="Long-TX word width (8/16/32 only, TM §7.1)")
+    ] = 16,
+    sclk_hz: Annotated[
+        int, Field(description="SCLK 50_000..40_000_000 Hz (quantized by the clock divider)")
+    ] = 1_000_000,
+    cpol: Annotated[int, Field(description="Clock polarity 0/1")] = 0,
+    cpha: Annotated[int, Field(description="Clock phase 0/1")] = 0,
+    lsb_first: Annotated[bool, Field(description="True = least-significant bit first (default MSB)")] = False,
+    cs_active_high: Annotated[
+        bool, Field(description="True = active-high CS (host single-line I/O only)")
+    ] = False,
+    timeout_ms: _SpiTimeout = 1000,
 ) -> TxWordsOut:
     """Stream SPI words TX-only via the staged long-TX path (BEGIN/DATA/COMMIT; the bus starts on commit).
 
+    Use when: pushing more than 504 B out (LED strings, firmware images,
+    stimulus patterns) — up to 1024 words of 8/16/32 bits per call.
+    Do NOT use when: you need to read back during the transfer (long-TX is
+    TX-only; use si104_spi_transfer) or the payload fits one normal
+    transaction.
+
     data_bits must be 8/16/32 (long-TX restriction, TM §7.1); tx_hex length
-    must be a non-zero multiple of data_bits/8, 1..1024 words per call. Word
-    assembly is big-endian: first hex byte = word MSB (SPI wire order). No
-    read-back: use si104_spi_transfer when rx is needed, and
-    si104_spi_control(action="tx_status") to confirm completion.
+    must be a non-zero multiple of data_bits/8. Word assembly is
+    big-endian: first hex byte = word MSB (SPI wire order). Confirm
+    completion afterwards with si104_spi_control(action="tx_status").
     """
     _log_call("si104_spi_tx_words", serial=serial, tx_bytes=len(tx_hex) // 2, data_bits=data_bits, sclk_hz=sclk_hz)
     tx = _parse_hex(tx_hex, "tx_hex")
@@ -992,8 +1097,11 @@ def si104_spi_tx_words(
     annotations=ToolAnnotations(idempotentHint=True),
 )
 def si104_spi_control(
-    serial: Optional[str] = None,
-    action: str = "tx_status",
+    serial: _Serial = None,
+    action: Annotated[
+        Literal["abort", "tx_status"],
+        Field(description="abort cancels a pending long-TX; tx_status reports its state"),
+    ] = "tx_status",
 ) -> ControlOut:
     """SPI session control: action="abort" cancels a pending long-TX upload or running transfer; action="tx_status" reports long-TX state (idle/uploading/committable/done_ok/done_error/cancelled_or_expired) with byte counters and result code.
 
@@ -1018,12 +1126,24 @@ def si104_spi_control(
 # firmware allows, so promising read-only/idempotent would be wrong.
 @mcp.tool(title="Raw vendor request passthrough")
 def si104_raw_request(
-    serial: Optional[str] = None,
-    interface: int = 4,
-    command: int = 0,
-    payload_hex: str = "",
+    serial: _Serial = None,
+    interface: Annotated[
+        int,
+        Field(description="USB interface: 0-3 = I2C channels, 4 = SPI, 5 = maintenance; VCC commands need 0-3"),
+    ] = 4,
+    command: Annotated[
+        int, Field(description="Vendor command ID 0..255 (known IDs listed in the description)")
+    ] = 0,
+    payload_hex: Annotated[
+        _HexBytes, Field(description="Vendor request payload hex, at most 512 B")
+    ] = "",
 ) -> RawRequestOut:
     """Raw vendor request passthrough to the control interface (interface 4) for firmware commands without a dedicated tool.
+
+    Use when: a firmware command has no dedicated tool — EVENT_POLL=0x1B,
+    VADDR_SET/GET=0x1C/0x1D, VCC threshold changes (0x1F with payload).
+    Do NOT use when: a dedicated tool exists (they encode payloads correctly
+    and validate faces) — hand-built payloads can disturb device state.
 
     Known IDs: I2C CONFIG=0x10, MASTER_XFER=0x11, SLAVE_READ=0x12,
     SLAVE_WRITE=0x13, ABORT/RESET=0x14/0x15, MAILBOX_PUSH/POP=0x16/0x17,
@@ -1031,8 +1151,7 @@ def si104_raw_request(
     VADDR_SET/GET=0x1C/0x1D, VCC_SET=0x1E (u8 enable, u8 save),
     VCC_THRESHOLD=0x1F (empty query or u16 threshold_mv + u8 save),
     SPI_CONFIG=0x20, SPI_XFER=0x21, SPI_ABORT=0x22, SPI_TX_STATUS=0x26.
-    Wrong commands can disturb device state — prefer dedicated tools when one
-    exists. payload and reply are each at most 512 bytes (SDK Guide section 7).
+    payload and reply are each at most 512 bytes (SDK Guide section 7).
     """
     if not 0 <= command <= 255:
         raise ValueError(f"command must be 0..255, got {command}")
@@ -1051,21 +1170,42 @@ def si104_raw_request(
 
 @mcp.tool(title="I2C slave buffer & mailbox")
 def si104_i2c_slave(
-    serial: Optional[str] = None,
-    channel: int = 0,
-    action: str = "write",
-    data_hex: str = "",
-    size: int = 1,
-    bus_hz: int = 100_000,
-    mode: int = 0,
-    slave_addr: int = 0x30,
-    slave_mode: int = 0,
-    reg_addr_16bit: bool = False,
-    data_16bit: bool = False,
-    data_big_endian: bool = False,
-    timeout_ms: int = 1000,
+    serial: _Serial = None,
+    channel: _Channel = 0,
+    action: Annotated[
+        Literal["read", "write", "push", "pop"],
+        Field(description='read/write = raw slave buffer; push/pop = mailbox FIFO (implies slave_mode=1)'),
+    ] = "write",
+    data_hex: Annotated[
+        _HexBytes, Field(description="write/push payload hex, at most 256 B")
+    ] = "",
+    size: Annotated[int, Field(description="Bytes to fetch for read/pop, 1..512")] = 1,
+    bus_hz: _BusHz = 100_000,
+    mode: _BusMode = 0,
+    slave_addr: Annotated[
+        int, Field(description="Slave address 0..127 for this channel's slave role")
+    ] = 0x30,
+    slave_mode: Annotated[
+        int, Field(description="Slave logic mode: 0 raw / 1 mailbox / 2 register (TM §8)")
+    ] = 0,
+    reg_addr_16bit: Annotated[
+        bool, Field(description="Register-mode slave uses 16-bit register pointers")
+    ] = False,
+    data_16bit: Annotated[
+        bool, Field(description="Register-mode slave uses 16-bit data words")
+    ] = False,
+    data_big_endian: Annotated[
+        bool, Field(description="Register-mode slave words are big-endian")
+    ] = False,
+    timeout_ms: _I2cTimeout = 1000,
 ) -> SlaveOut:
     """I2C slave buffer and mailbox FIFO access on one channel (raw/mailbox/register logic modes).
+
+    Use when: another I2C channel (or an external master) needs something to
+    talk to — set up a loopback peer, preload a slave send buffer, or drain
+    its mailbox FIFO.
+    Do NOT use when: you are the master talking to a device — use
+    si104_i2c_transfer / register tools instead.
 
     Verified on hardware: the firmware keeps channel config across USB
     sessions while powered, so a slave configured by an earlier call stays

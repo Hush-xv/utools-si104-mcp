@@ -17,6 +17,14 @@
 - **结构化输出**：14 个工具声明 `outputSchema`（pydantic 模型，字段全可选、可空），成功调用同时返回 `structuredContent` 与等价的 text JSON——旧客户端不受影响，强类型客户端可直接按 schema 解析；诊断性附加字段经 `extra="allow"` 透传，不破坏校验
 - **工具注解与显示名**：`si104_enumerate / device_info / read_vcc / i2c_scan` 标注 `readOnlyHint=true`；`vcc_control / spi_control` 标注 `idempotentHint=true`；`i2c_control` 标注 `destructiveHint=true`（reset 清配置）；`raw_request` 有意不标注（万能透传不作承诺）；全部工具带 `title`
 - **错误语义**：参数校验失败与设备级失败均以 `isError=true` 返回（MCP 规范建议）；结果文本仍是完整结构化 JSON（SDK 会在其前加 `Error executing tool <tool>: ` 前缀，剥离后 `json.loads` 即得全部字段）；`completion_unknown` 语义不变
+- **输入侧 schema**：全部参数带 `Field` 描述（模型选工具时看到的是 inputSchema 而非 docstring），枚举类取值用 `Literal` 收紧——`action`×3、`data_bits`(长发送 8/16/32)、I2C `mode`(0-3)，错值在 schema 层就被拦住；运行时校验保留作纵深防御
+
+## 安全注意事项
+
+- 所有工具入参在进入 SDK 前均做范围/格式校验；schema 层另有枚举约束
+- USB 单句柄互斥即天然限流：并发调用者收到瞬时 `-2/-3`，服务端已内置退避重试（见特性节）
+- 敏感操作（使能供电 `si104_vcc_control`、通道复位 `si104_i2c_control`、万能透传 `si104_raw_request`）建议客户端在调用前弹出人工确认——这是客户端职责（MCP 规范 Security Considerations），服务端不代劳
+- 协议日志只记负载长度不记内容，总线数据不会泄入日志
 
 ## 前置条件
 
