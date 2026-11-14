@@ -16,7 +16,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Install deps (vendor wheel stays out of CI — stub mode)
-        run: python -m pip install --upgrade pip "mcp>=1.2,<2" ruff
+        run: python -m pip install --upgrade pip -e . ruff
       - name: Lint
         run: ruff check .
       - name: Unit tests (si104_stub)

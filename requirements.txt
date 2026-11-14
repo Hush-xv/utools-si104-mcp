@@ -1,6 +1,0 @@
-mcp>=1.2,<2
-# UTools-SI104 native SDK wheel is NOT redistributed in this repo (vendor license).
-# Install it from your official SDK package FIRST, into the same environment
-# this server will run in:
-#   pip install <sdk-package>/python/wheels/utools_si104-1.0.5-py3-none-win_amd64.whl      # Windows
-#   pip install <sdk-package>/python/wheels/utools_si104-1.0.5-py3-none-linux_x86_64.whl   # Linux

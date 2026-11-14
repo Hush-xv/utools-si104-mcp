@@ -1,5 +1,7 @@
 # utools-si104-mcp
 
+**English**: An MCP (Model Context Protocol) server that wraps the UTools-SI104 USB-to-SPI/I2C adapter SDK (Lanmotion) into 14 AI-callable tools — device enumeration, SPI full-duplex and long transfers, I2C master transactions and register access, bus scanning, slave buffers & mailbox FIFOs, channel recovery, and VCC power control. Stateless stdio design (device opened per call, co-exists with the vendor GUI), MCP-spec structured output and tool annotations, hardware-validated semantics. Setup and hardware notes below are in Chinese.
+
 把 UTools-SI104（USB 转 SPI/I2C 适配器，Lanmotion）SDK 封装成 MCP 服务器，让 ZCode / Claude Code / Codex / DeepSeek 等 AI 客户端直接驱动硬件：设备枚举、SPI 全双工收发与长发送、I2C 主机事务与寄存器读写、总线扫描、从机缓冲与邮箱 FIFO、通道恢复、VCC 供电诊断与控制——**14 个工具覆盖 SDK 全部 API**。
 
 协议日志走 stderr，stdout 专用于 MCP 协议。
@@ -44,7 +46,7 @@ pip install <sdk包>\python\wheels\utools_si104-1.0.5-py3-none-win_amd64.whl
 git clone https://github.com/Hush-xv/utools-si104-mcp.git
 cd utools-si104-mcp
 python -m venv .venv
-.venv\Scripts\python -m pip install -r requirements.txt
+.venv\Scripts\python -m pip install .
 
 :: 也可 pip install . 装成本包（提供 si104-mcp 命令行入口）
 ```
@@ -113,6 +115,14 @@ args = ["<repo>\\server.py"]
 
 App 的 MCP 设置选自定义（stdio）：命令 = `<venv>\Scripts\python.exe`，参数 = `<repo>\server.py`。网页版够不到本机进程，需本机 App 版。
 
+### 调试（MCP Inspector）
+
+不接客户端也能可视化查看工具、schema 并手动调用：
+
+```bat
+npx @modelcontextprotocol/inspector .venv\Scripts\python.exe server.py
+```
+
 ## 使用方法
 
 配好后在任一客户端里说人话，AI 自选工具：
@@ -137,6 +147,13 @@ App 的 MCP 设置选自定义（stdio）：命令 = `<venv>\Scripts\python.exe`
 仓库自带 `si104_stub.py` 测试替身（内存版 SDK 子集模型，**非固件仿真器**）：当环境里没有 vendor wheel 时，`smoke_test.py`/CI 自动以 STUB MODE 启动服务器（stderr 醒目提示），工具面、参数校验、错误路径全部可测；`server.py` 生产启动不受影响——缺 wheel 时仍报错退出并给出安装指引（测试场景可用 `SI104_MCP_STUB=1` 强制替身模式）。
 
 CI（`.github/workflows/ci.yml`）：ruff + `unit_test.py` + `smoke_test.py`，矩阵 ubuntu/windows × Python 3.10/3.13，不依赖 vendor wheel 与硬件。实机行为仍以 `hw_test.py` / `stress_boundary_test.py` 为准。
+
+## 发布清单（维护者）
+
+- **GitHub topics** 建议：`mcp` `model-context-protocol` `i2c` `spi` `usb` `hardware` `ai-tools` `claude-code` `zcode`
+- **MCP Registry**：仓库公开后按 [registry 流程](https://modelcontextprotocol.io/registry/about) 提交（需所有权验证）
+- **Release**：`v1.1.0` annotated tag 的 message 即发布说明；push 时带 `--tags`
+- **传输**：当前仅 stdio；HTTP 模式有意暂缓——避免把万能透传 `si104_raw_request` 暴露到网络，将来启用需绑 localhost 并加鉴权
 
 ## 边界
 

@@ -44,7 +44,7 @@ except ImportError:
             "si104-mcp: the vendor SDK wheel is missing. Install it into this "
             "environment first (the same python that runs server.py), see README:\n"
             "  pip install <sdk-package>/python/wheels/utools_si104-*.whl\n"
-            "  pip install -r requirements.txt\n"
+            "  pip install .\n"
         )
         raise SystemExit(1) from None
 
