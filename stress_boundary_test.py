@@ -6,11 +6,13 @@ speed extremes (50k / 40M).
 Stress: sustained transaction counts, USB open/close churn, long-TX runs.
 Timing and pass rates are reported; no assertion aborts the run.
 """
+import os
 import struct
 import time
 
 from si104 import Device, I2cConfig, SpiConfig, Error
 
+SLAVE_CH = int(os.environ.get("SI104_SLAVE_CH", "1"))  # bench wiring
 RESULTS = []
 
 
@@ -35,9 +37,9 @@ with Device(None) as dev:
     v = dev.request(0, 0x1F)
     if not (v and v[0]):
         dev.request(0, 0x1E, b"\x01\x00")
-    dev.i2c_configure(1, I2cConfig(role=1, mode=0, slave_addr=0x45, timeout_ms=1000, slave_mode=2))
+    dev.i2c_configure(SLAVE_CH, I2cConfig(role=1, mode=0, slave_addr=0x45, timeout_ms=1000, slave_mode=2))
     for _ in range(40):
-        if i2c_status(dev, 1).get("initialized"):
+        if i2c_status(dev, SLAVE_CH).get("initialized"):
             break
         time.sleep(0.05)
     dev.i2c_configure(0, I2cConfig(role=0, mode=0, slave_addr=0x45, timeout_ms=1000))
@@ -166,9 +168,9 @@ with Device(None) as dev:
     check("S3 20x long-TX 1024 words", bad == 0, f"bad={bad} {dt:.1f}s")
 
     # error counters after everything
-    st0, st1 = i2c_status(dev, 0), i2c_status(dev, 1)
+    st0, st1 = i2c_status(dev, 0), i2c_status(dev, SLAVE_CH)
     print(f"ch0 err_count={st0['err_count']} req_count={st0['req_count']}", flush=True)
-    print(f"ch1 err_count={st1['err_count']} req_count={st1['req_count']}", flush=True)
+    print(f"ch{SLAVE_CH} err_count={st1['err_count']} req_count={st1['req_count']}", flush=True)
 
 # S4 runs OUTSIDE the long-lived session: a second handle on the same USB
 # device conflicts with the outer one (the MCP server never holds two).

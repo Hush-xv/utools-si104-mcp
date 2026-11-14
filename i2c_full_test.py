@@ -11,6 +11,7 @@ register slave + reg-style access, per-transfer VCC monitor, EVENT_POLL,
 ABORT, 10-bit addressing.
 """
 import json
+import os
 import struct
 import sys
 import time
@@ -18,6 +19,7 @@ import time
 from si104 import Device, I2cConfig, Error
 
 SERIAL = sys.argv[1] if len(sys.argv) > 1 else None
+SLAVE_CH = int(os.environ.get("SI104_SLAVE_CH", "1"))  # bench wiring: which channel faces the master
 RESULTS = []
 
 
@@ -70,39 +72,39 @@ with Device(SERIAL) as dev:
         dev.request(0, 0x1E, b"\x01\x00")
         print("VCC enabled")
 
-    st = slave_init(dev, 1, 0x42, logic=0)
+    st = slave_init(dev, SLAVE_CH, 0x42, logic=0)
     check("slave raw @0x42 init", st.get("initialized"))
     master(dev, target=0x42)
 
     # A) repeated-START write-after-read
-    dev.i2c_slave_write(1, b"\xAA\x55\xAA\x55")
+    dev.i2c_slave_write(SLAVE_CH, b"\xAA\x55\xAA\x55")
     rx = dev.i2c_transfer(0, 0x42, b"\x01\x02", 4)
     check("write-after-read (repeated START)", rx == b"\xAA\x55\xAA\x55", rx.hex())
-    got = dev.i2c_slave_read(1, 2)
+    got = dev.i2c_slave_read(SLAVE_CH, 2)
     print(f"INFO  combined-tx write part lands in slave rx? {got.hex()!r} "
           "(firmware treats it as the command phase — documented finding, not a fault)")
 
     # B) speed presets
     for mode, label in ((1, "fast 400k"), (2, "fast-plus 1M")):
         master(dev, mode=mode, target=0x42)
-        dev.i2c_slave_write(1, b"\x11" * 8)
+        dev.i2c_slave_write(SLAVE_CH, b"\x11" * 8)
         rx = dev.i2c_transfer(0, 0x42, b"\x00", 8)
         check(f"mode={mode} {label} roundtrip", rx == b"\x11" * 8)
     master(dev, mode=3, bus_hz=200_000, target=0x42)
-    dev.i2c_slave_write(1, b"\x22" * 8)
+    dev.i2c_slave_write(SLAVE_CH, b"\x22" * 8)
     rx = dev.i2c_transfer(0, 0x42, b"\x00", 8)
     check("mode=3 custom 200k roundtrip", rx == b"\x22" * 8)
     master(dev, target=0x42)
 
     # C) mailbox slave: first write byte is the pointer, rest is pushed
-    st = slave_init(dev, 1, 0x43, logic=1)
+    st = slave_init(dev, SLAVE_CH, 0x43, logic=1)
     check("slave mailbox @0x43 init", st.get("initialized") and st.get("slave_logic_mode") == 1)
     dev.i2c_transfer(0, 0x43, b"MBOX!", 0)
-    pop = dev.request(1, 0x17)  # MAILBOX_POP
+    pop = dev.request(SLAVE_CH, 0x17)  # MAILBOX_POP
     check("mailbox push/pop (first byte = pointer)", pop == b"BOX!", pop.hex())
 
     # D) register-mode slave: pointer-phase access via plain transfers
-    st = slave_init(dev, 1, 0x44, logic=2)
+    st = slave_init(dev, SLAVE_CH, 0x44, logic=2)
     check("slave register @0x44 init", st.get("initialized") and st.get("slave_logic_mode") == 2)
     master(dev, target=0x44)
     try:
@@ -114,9 +116,9 @@ with Device(SERIAL) as dev:
 
     # G) per-transfer VCC monitor tail
     try:
-        st = slave_init(dev, 1, 0x42, logic=0)
+        st = slave_init(dev, SLAVE_CH, 0x42, logic=0)
         master(dev, target=0x42)
-        dev.i2c_slave_write(1, b"\x77")
+        dev.i2c_slave_write(SLAVE_CH, b"\x77")
         rx = dev.i2c_transfer(0, 0x42, b"", 1, monitor_vcc=True)
         v = dev.last_i2c_vcc or {}
         check("monitor_vcc tail parsed", rx == b"\x77" and bool(v.get("adc_valid")), json.dumps(v))
@@ -125,7 +127,7 @@ with Device(SERIAL) as dev:
 
     # H) EVENT_POLL (events accumulated from master writes on ch1)
     try:
-        ev = dev.request(1, 0x1B)
+        ev = dev.request(SLAVE_CH, 0x1B)
         if len(ev) >= 8:
             etype, slen, eaddr, elen, dropped = struct.unpack("<BBHHH", ev[:8])
             check("event_poll header", True, f"type={etype} samples={slen}B addr=0x{eaddr:02X} dropped={dropped}")
@@ -137,7 +139,7 @@ with Device(SERIAL) as dev:
     # F) ABORT then bus still alive
     try:
         dev.request(0, 0x14)
-        dev.i2c_slave_write(1, b"\x5A")
+        dev.i2c_slave_write(SLAVE_CH, b"\x5A")
         rx = dev.i2c_transfer(0, 0x42, b"", 1)
         check("bus alive after ABORT", rx == b"\x5A", rx.hex())
     except Error as e:
@@ -145,15 +147,15 @@ with Device(SERIAL) as dev:
 
     # I) 10-bit addressing
     try:
-        st = slave_init(dev, 1, 0x142, logic=0, addr10=True)
+        st = slave_init(dev, SLAVE_CH, 0x142, logic=0, addr10=True)
         master(dev, target=0x142, addr10=True)
         dev.i2c_transfer(0, 0x142, b"\xAB", 0)
-        got = dev.i2c_slave_read(1, 1)
+        got = dev.i2c_slave_read(SLAVE_CH, 1)
         check("10-bit addr write->slave", got == b"\xAB", f"slave_addr={st.get('slave_addr'):#x}")
     except Error as e:
         check("10-bit addr write->slave", False, str(e))
 
-    print("\nfinal ch1 status:", json.dumps(i2c_status(dev, 1)))
+    print("\nfinal ch1 status:", json.dumps(i2c_status(dev, SLAVE_CH)))
 
 print("\n== summary ==")
 fails = [n for n, ok in RESULTS if not ok]

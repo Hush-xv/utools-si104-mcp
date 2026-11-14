@@ -4,6 +4,7 @@ The MCP server is stateless (open/close per call), so master+slave sides of
 the loopback must live inside a single session — this script is that session.
 """
 import json
+import os
 import struct
 import sys
 import time
@@ -11,6 +12,7 @@ import time
 from si104 import Device, I2cConfig
 
 SERIAL = sys.argv[1] if len(sys.argv) > 1 else None
+SLAVE_CH = int(os.environ.get("SI104_SLAVE_CH", "1"))  # bench wiring
 
 
 def i2c_status(dev, ch):
@@ -31,17 +33,17 @@ def i2c_status(dev, ch):
 
 
 with Device(SERIAL) as dev:
-    print("ch1 status before:", json.dumps(i2c_status(dev, 1)))
+    print(f"ch{SLAVE_CH} status before:", json.dumps(i2c_status(dev, SLAVE_CH)))
 
-    dev.i2c_configure(1, I2cConfig(role=1, mode=0, slave_addr=0x42, timeout_ms=1000))
+    dev.i2c_configure(SLAVE_CH, I2cConfig(role=1, mode=0, slave_addr=0x42, timeout_ms=1000))
     init, st = False, {}
     for _ in range(40):
-        st = i2c_status(dev, 1)
+        st = i2c_status(dev, SLAVE_CH)
         if st.get("initialized"):
             init = True
             break
         time.sleep(0.05)
-    print("ch1 slave(0x42, raw) initialized:", init, json.dumps(st))
+    print(f"ch{SLAVE_CH} slave(0x42, raw) initialized:", init, json.dumps(st))
     if not init:
         raise SystemExit("slave channel never initialized — check wiring/pull-ups")
 
@@ -55,16 +57,16 @@ with Device(SERIAL) as dev:
 
     payload = b"hello-si104-loopback"
     dev.i2c_transfer(0, 0x42, payload, 0)  # master write -> slave rx buffer
-    got = dev.i2c_slave_read(1, len(payload))
+    got = dev.i2c_slave_read(SLAVE_CH, len(payload))
     ok1 = got == payload
     print("master->slave:", payload, "=>", got, "MATCH" if ok1 else "MISMATCH")
 
     reply = b"ok-from-slave"
-    dev.i2c_slave_write(1, reply)
+    dev.i2c_slave_write(SLAVE_CH, reply)
     back = dev.i2c_transfer(0, 0x42, b"", len(reply))  # master read <- slave tx buffer
     ok2 = back == payload[: len(reply)] or back == reply
     print("slave->master:", reply, "=>", back, "MATCH" if ok2 else "MISMATCH")
 
     print("ch0 status after:", json.dumps(i2c_status(dev, 0)))
-    print("ch1 status after:", json.dumps(i2c_status(dev, 1)))
+    print(f"ch{SLAVE_CH} status after:", json.dumps(i2c_status(dev, SLAVE_CH)))
     print("LOOPBACK", "PASS" if ok1 and ok2 else "FAIL")
