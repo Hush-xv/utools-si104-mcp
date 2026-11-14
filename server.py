@@ -147,6 +147,7 @@ class ScanOut(_ErrBase):
     found: list[str] | None = None
     range: list[str] | None = None
     found_before_abort: list[str] | None = None
+    aborted_at: str | None = None
 
 
 class ControlOut(_ErrBase):
@@ -307,14 +308,15 @@ def _query_vcc(dev, channel):
     try:
         raw = dev.request(channel, 0x1F)
     except Error as e:
-        return {"error": str(e), "code": e.code}
+        return _error_result(e)
     reply = _decode_vcc_reply(raw)
     if reply is None:
         return {
             "error": f"VCC query reply too short ({len(raw)} bytes)",
+            "code": -6,
             "raw_hex": raw.hex(),
         }
-    return reply
+    return {**reply, "raw_hex": raw.hex()}
 
 
 def _parse_hex(value, name):
@@ -621,8 +623,15 @@ def si104_spi_transfer(
         raise ValueError(
             f"data_bits must be 1..32 for normal transfers (SDK Guide section 6), got {data_bits}"
         )
-    step = data_bits // 8
+    step = (data_bits + 7) // 8
     if data_bits > 8 and (len(tx) % step or rx_size % step):
+        LOG.debug(
+            "si104_spi_transfer rejected partial word: data_bits=%d word_bytes=%d tx_bytes=%d rx_bytes=%d",
+            data_bits,
+            step,
+            len(tx),
+            rx_size,
+        )
         raise ValueError(
             f"data_bits={data_bits}: tx length and rx_size must be multiples of {step} "
             "(complete words required, TM section 7)"
@@ -924,6 +933,7 @@ def si104_i2c_scan(
                         "code_meaning": _ERROR_MEANING.get(e.code, f"code {e.code}"),
                         "firmware_status": e.firmware_status,
                         "found_before_abort": found,
+                        "aborted_at": f"0x{addr:02X}",
                         "hint": "run si104_enumerate to check the dongle is present",
                     }
                 continue  # allowlisted NACK/timeout = nobody at this address
@@ -1029,13 +1039,14 @@ def si104_vcc_control(
 
     def op(dev):
         dev.request(channel, 0x1E, bytes([1 if enable else 0, 1 if persist else 0]))
-        raw = dev.request(channel, 0x1F)
-        reply = _decode_vcc_reply(raw)
-        if reply is None:
-            return {
-                "error": f"VCC query reply too short after VCC_SET ({len(raw)} bytes)",
-                "raw_hex": raw.hex(),
-            }
+        reply = _query_vcc(dev, channel)
+        if "error" in reply:
+            LOG.debug("VCC verification failed after setting output on channel %d", channel)
+            reply["completion_unknown"] = True
+            reply["retry_hint"] = "Read VCC state before repeating the request."
+        elif reply["output_enabled"] != enable:
+            LOG.debug("VCC readback differs from requested output on channel %d", channel)
+            reply["error"] = "VCC output does not match the requested state"
         return {"requested_enable": enable, "requested_persist": persist, **reply}
 
     return _with_device(serial, op, "si104_vcc_control")
@@ -1270,12 +1281,22 @@ def si104_i2c_slave(
         # Firmware keeps channel config across USB sessions while powered.
         # Reuse a matching slave config instead of clobbering it with defaults.
         cur = _decode_i2c_status(dev.status(channel))
-        if not (
+        reuse_config = (
             cur.get("initialized")
             and cur.get("role") == 1
             and cur.get("slave_addr") == slave_addr
-            and (slave_mode == 0 or cur.get("slave_logic_mode") == slave_mode)
-        ):
+            and cur.get("slave_logic_mode") == slave_mode
+        )
+        # DEBUG: make persistent-config reuse vs. mode-switch decisions observable.
+        LOG.debug(
+            "si104_i2c_slave %s channel=%d addr=0x%02X current_mode=%s requested_mode=%d",
+            "reusing" if reuse_config else "configuring",
+            channel,
+            slave_addr,
+            cur.get("slave_logic_mode"),
+            slave_mode,
+        )
+        if not reuse_config:
             dev.i2c_configure(
                 channel,
                 I2cConfig(
@@ -1327,298 +1348,6 @@ def si104_i2c_slave(
     return _with_device(serial, op, "si104_i2c_slave")
 
 
-_CONSOLE_HTML = r"""<!doctype html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<title>SI104 工具控制台</title>
-<style>
-  body { font: 14px/1.5 -apple-system, "Segoe UI", sans-serif; margin: 0; background: #14161a; color: #d7dae0; }
-  header { padding: 10px 16px; background: #1d2026; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-  header b { margin-right: 8px; font-size: 15px; }
-  .lamp { color: #555; font-size: 16px; }
-  .lamp.ok { color: #7ee787; }
-  .lamp.off { color: #ff6b6b; }
-  input, select { background: #1d2026; color: inherit; border: 1px solid #2a2e35; border-radius: 4px; padding: 5px 8px; }
-  main { display: flex; height: calc(100vh - 48px); }
-  section { overflow-y: auto; }
-  #quick { width: 320px; border-right: 1px solid #2a2e35; padding: 12px; }
-  #adv { flex: 1; border-right: 1px solid #2a2e35; padding: 12px; display: none; }
-  #adv.show { display: block; }
-  #right { width: 420px; padding: 12px; background: #101216; }
-  h4 { margin: 14px 0 6px; color: #8a919c; font-size: 12px; text-transform: uppercase; letter-spacing: 1px; }
-  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .card { background: #1d2026; border: 1px solid #2a2e35; border-radius: 8px; padding: 10px 12px; cursor: pointer; text-align: left; color: inherit; }
-  .card:hover { border-color: #3b82f6; }
-  .card b { display: block; }
-  .card small { color: #8a919c; }
-  .card.wide { grid-column: 1 / -1; }
-  .chips { display: flex; gap: 6px; margin: 6px 0; }
-  .chipch { background: #1d2026; border: 1px solid #2a2e35; color: inherit; border-radius: 4px; padding: 3px 10px; cursor: pointer; }
-  .chipch.on { border-color: #3b82f6; color: #7eb6ff; }
-  .bar { background: #1d2026; border: 1px solid #2a2e35; border-radius: 6px; height: 14px; overflow: hidden; margin: 6px 0; }
-  .fill { height: 100%; background: linear-gradient(90deg, #2b6cb0, #7ee787); }
-  .rcard { background: #1d2026; border: 1px solid #2a2e35; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
-  .rhead { display: flex; gap: 10px; align-items: center; margin-bottom: 6px; }
-  .chip { border-radius: 10px; padding: 1px 10px; font-size: 12px; }
-  .chip.ok { background: #12331d; color: #7ee787; }
-  .chip.err { background: #3a1414; color: #ff6b6b; }
-  pre { background: #0f1114; border: 1px solid #2a2e35; border-radius: 4px; padding: 10px; white-space: pre-wrap; word-break: break-all; font-size: 12px; }
-  .err { color: #ff6b6b; }
-  .ok { color: #7ee787; }
-  .hint { color: #8a919c; font-size: 12px; }
-  .hitem { background: #1d2026; border: 1px solid #2a2e35; border-radius: 6px; padding: 6px 10px; margin-bottom: 6px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
-  .hitem small { color: #8a919c; }
-  #tools button { display: block; width: 100%; text-align: left; background: none; border: 0; color: inherit; padding: 6px 10px; cursor: pointer; border-radius: 4px; }
-  #tools button:hover, #tools button.on { background: #2a2e35; }
-  #tools small { color: #8a919c; }
-  label { display: block; margin: 10px 0 2px; }
-  label i { color: #e5c07b; font-style: normal; font-size: 12px; }
-  button.act { background: #2b6cb0; border: 0; color: #fff; padding: 7px 18px; border-radius: 4px; cursor: pointer; margin-top: 14px; }
-</style>
-</head>
-<body>
-<header>
-  <b>SI104 控制台</b>
-  <span id="devlamp" class="lamp">●</span><span id="devname" class="hint">未连接</span>
-  <input id="auth" type="password" placeholder="Bearer token(可选)" size="18">
-  <button onclick="boot()" style="background:#2b6cb0;border:0;color:#fff;padding:5px 14px;border-radius:4px;cursor:pointer">连接</button>
-  <span id="status" class="hint">未连接</span>
-  <span style="flex:1"></span>
-  <label><input type="radio" name="mode" checked onchange="showMode(0)"> 快捷</label>
-  <label><input type="radio" name="mode" onchange="showMode(1)"> 高级</label>
-</header>
-<main>
-  <section id="quick">
-    <h4>通道(适用于通道类操作)</h4>
-    <div class="chips" id="chips"></div>
-    <h4>快捷操作</h4>
-    <div class="grid">
-      <button class="card" onclick="opEnumerate()"><b>🔌 枚举设备</b><small>列出 USB 上的 SI104</small></button>
-      <button class="card" onclick="opInfo()"><b>ℹ️ 设备信息</b><small>固件 / limits / 状态</small></button>
-      <button class="card" onclick="opVccRead()"><b>📊 读取 VCC</b><small>电压与使能状态</small></button>
-      <button class="card" onclick="opScan()"><b>🔍 I2C 扫描</b><small>0x08..0x77 探测</small></button>
-      <button class="card" onclick="opVcc(true)"><b>⚡ 使能 VCC</b><small>NO_POWER 恢复</small></button>
-      <button class="card" onclick="opVcc(false)"><b>🛑 关断 VCC</b><small>恢复默认供电关闭</small></button>
-      <button class="card" onclick="opSpiTest()"><b>🧪 SPI 回环自测</b><small>MOSI↔MISO 短接时 ✓</small></button>
-      <button class="card" onclick="opSpiStatus()"><b>📡 SPI 状态</b><small>长发送完成记录</small></button>
-      <button class="card" onclick="opSpiAbort()"><b>⏹ SPI 中止</b><small>取消在途长发送</small></button>
-      <button class="card" onclick="opI2cControl('abort')"><b>🚑 I2C 中止</b><small>取消通道在途事务</small></button>
-      <button class="card" onclick="opI2cControl('reset')"><b>🧹 I2C 复位</b><small>清通道配置(需重配)</small></button>
-    </div>
-    <div id="vccbar"></div>
-    <p class="hint">通道选择对:扫描 / 设备信息 / VCC / I2C 恢复 生效。寄存器读写、从机邮箱、raw 透传在「高级」模式。</p>
-  </section>
-  <section id="adv">
-    <h4>全部工具(含参数)</h4>
-    <div id="tools"></div>
-    <div id="pane"><p class="hint">选择工具后在此填参调用。</p></div>
-  </section>
-  <section id="right">
-    <div id="out"><p class="hint">连接后点击左侧快捷操作,结果将显示在这里。</p></div>
-    <h4>历史(最近 10 条,点击回看)</h4>
-    <div id="hist"><p class="hint">暂无</p></div>
-  </section>
-</main>
-<script>
-const $ = id => document.getElementById(id);
-let nextId = 1, sessionId = null, toolList = [], current = null, qch = 0, hist = [];
-
-const baseHeaders = () => ({
-  "Content-Type": "application/json",
-  "Accept": "application/json, text/event-stream",
-  ...( $("auth").value ? { "Authorization": "Bearer " + $("auth").value } : {} ),
-  ...( sessionId ? { "mcp-session-id": sessionId } : {} ),
-});
-
-async function rpc(method, params, isNotify) {
-  const body = { jsonrpc: "2.0", method };
-  if (!isNotify) body.id = nextId++;
-  if (params) body.params = params;
-  const res = await fetch("/mcp", { method: "POST", headers: baseHeaders(), body: JSON.stringify(body) });
-  const sid = res.headers.get("mcp-session-id");
-  if (sid) sessionId = sid;
-  if (isNotify) return null;
-  const ct = res.headers.get("content-type") || "";
-  let payload = null;
-  if (ct.includes("text/event-stream")) {
-    const text = await res.text();
-    for (const line of text.split("\n").reverse()) {
-      if (!line.startsWith("data:")) continue;
-      try { const j = JSON.parse(line.slice(5).trim()); if (j.id !== undefined) { payload = j; break; } } catch (e) {}
-    }
-  } else {
-    payload = await res.json();
-  }
-  if (!payload) throw new Error("no JSON-RPC payload in response");
-  if (payload.error) throw new Error(payload.error.message || JSON.stringify(payload.error));
-  return payload.result;
-}
-
-function stripNulls(o) {
-  if (Array.isArray(o)) return o.map(stripNulls);
-  if (o && typeof o === "object") { const r = {}; for (const [k, v] of Object.entries(o)) if (v !== null) r[k] = stripNulls(v); return r; }
-  return o;
-}
-
-function resultText(r) {
-  let text = r.structuredContent ? JSON.stringify(stripNulls(r.structuredContent), null, 2)
-                                 : (r.content?.[0]?.text || "");
-  try { const j = JSON.parse(text); if (j && typeof j === "object") text = JSON.stringify(stripNulls(j), null, 2); } catch (e) {}
-  return text.replace(/</g, "&lt;");
-}
-
-function renderCard(label, r, ms) {
-  const cls = r.isError ? "err" : "ok";
-  $("out").innerHTML = `<div class="rcard"><div class="rhead"><span class="chip ${cls}">${r.isError ? "失败" : "成功"}</span><b>${label}</b><span class="hint">${ms ?? "-"} ms</span></div><pre>${resultText(r)}</pre></div>`;
-}
-
-async function call(name, args, label) {
-  const t0 = performance.now();
-  try {
-    const r = await rpc("tools/call", { name, arguments: args || {} });
-    const ms = Math.round(performance.now() - t0);
-    renderCard(label || name, r, ms);
-    pushHist(label || name, r, ms);
-    return r;
-  } catch (e) {
-    $("out").innerHTML = `<div class="rcard"><span class="chip err">错误</span><b>${label || name}</b><pre>${String(e.message).replace(/</g, "&lt;")}</pre></div>`;
-    return null;
-  }
-}
-
-function pushHist(label, r, ms) {
-  hist.unshift({ time: new Date().toTimeString().slice(0, 8), label, ok: !!r && !r.isError, r, ms });
-  hist = hist.slice(0, 10);
-  $("hist").innerHTML = hist.map((h, i) =>
-    `<div class="hitem" onclick="renderCard(hist[${i}].label, hist[${i}].r, hist[${i}].ms)"><span class="chip ${h.ok ? "ok" : "err"}">${h.ok ? "成功" : "失败"}</span><b>${h.label}</b><small>${h.time}${h.ms !== null ? " · " + h.ms + "ms" : ""}</small></div>`).join("");
-}
-
-function renderChips() {
-  $("chips").innerHTML = [0, 1, 2, 3].map(c =>
-    `<button class="chipch ${c === qch ? "on" : ""}" onclick="qch = ${c}; renderChips()">ch${c}</button>`).join("");
-}
-
-function showMode(m) {
-  $("adv").className = m ? "show" : "";
-  if (m && !toolList.length) boot(true);
-}
-
-async function boot(keepMode) {
-  $("status").textContent = "连接中…";
-  sessionId = null;
-  try {
-    await rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {},
-                              clientInfo: { name: "web-console", version: "1.1.0" } });
-    await rpc("notifications/initialized", null, true);
-    const t = await rpc("tools/list", {});
-    toolList = t.tools;
-    $("tools").innerHTML = toolList.map((tl, i) =>
-      `<button onclick="pick(${i})"><b>${tl.name}</b><br><small>${(tl.title || "").replace(/</g, "&lt;")}</small></button>`).join("");
-    $("status").textContent = `已连接,${toolList.length} 个工具`;
-    $("status").className = "ok";
-    await opEnumerate(true);
-  } catch (e) {
-    $("status").textContent = "失败: " + e.message;
-    $("status").className = "err";
-  }
-}
-
-async function opEnumerate(silent) {
-  const r = await call("si104_enumerate", {}, "枚举设备");
-  if (!r) return;
-  const d = (r.structuredContent?.devices || [])[0];
-  if (d) { $("devname").textContent = d.serial; $("devlamp").className = "lamp ok"; }
-  else { $("devname").textContent = "未发现设备"; $("devlamp").className = "lamp off"; }
-  if (silent) $("out").innerHTML = `<p class="hint">已连接并读取设备。点击左侧快捷操作开始。</p>`;
-}
-
-async function opInfo() { await call("si104_device_info", { channel: qch }, "设备信息 ch" + qch); }
-
-async function opVccRead() {
-  const r = await call("si104_read_vcc", { channel: qch }, "读取 VCC ch" + qch);
-  if (r && !r.isError) renderVcc(r.structuredContent || {});
-}
-
-function renderVcc(v) {
-  const mv = v.measured_mv ?? 0;
-  const pct = Math.min(100, Math.round(mv / 3600 * 100));
-  $("vccbar").innerHTML = `<h4>VCC ch${qch}</h4><div class="hint">输出 ${v.output_enabled ? "已使能 ⚡" : "关闭"} · 阈值 ${v.threshold_mv} mV</div>
-    <div class="bar"><div class="fill" style="width:${pct}%"></div></div><div class="hint">${mv} mV / 3600 mV</div>`;
-}
-
-async function opVcc(on) {
-  const r = await call("si104_vcc_control", { channel: qch, enable: on }, (on ? "使能" : "关断") + " VCC ch" + qch);
-  if (r && !r.isError) opVccRead();
-}
-
-async function opScan() { await call("si104_i2c_scan", { channel: qch }, "I2C 扫描 ch" + qch); }
-
-async function opSpiTest() {
-  const r = await call("si104_spi_transfer", { tx_hex: "A55AC35C", rx_size: 4, sclk_hz: 1000000 }, "SPI 回环自测");
-  if (r && !r.isError) {
-    const hex = (r.structuredContent?.rx_hex || "").toLowerCase();
-    const ok = hex === "a55ac35c";
-    $("out").innerHTML = `<div class="rcard"><span class="chip ${ok ? "ok" : "err"}">${ok ? "回环 ✓ 数据匹配" : "未回环 ✗"}</span><pre>TX A55AC35C → RX ${hex || "(空)"}</pre><div class="hint">MOSI↔MISO 未短接时显示未回环属正常;回环判断仅对 8-bit 模式可靠。</div></div>`;
-  }
-}
-
-async function opSpiStatus() { await call("si104_spi_control", { action: "tx_status" }, "SPI 状态"); }
-async function opSpiAbort() { await call("si104_spi_control", { action: "abort" }, "SPI 中止"); }
-async function opI2cControl(action) { await call("si104_i2c_control", { channel: qch, action }, "I2C " + action + " ch" + qch); }
-
-function pick(i) {
-  current = toolList[i];
-  document.querySelectorAll("#tools button").forEach((b, j) => b.classList.toggle("on", j === i));
-  const props = (current.inputSchema || {}).properties || {};
-  const req = new Set((current.inputSchema || {}).required || []);
-  let html = `<h3>${current.name}</h3><p class="hint">${(current.description || "").replace(/</g, "&lt;").replace(/\n/g, "<br>")}</p>`;
-  for (const [k, v] of Object.entries(props)) {
-    const desc = (v.description || "").replace(/</g, "&lt;");
-    const mark = req.has(k) ? " *" : "";
-    html += `<label>${k}${mark} <i>${desc}</i></label>`;
-    if (v.enum) {
-      html += `<select id="f_${k}" data-t="${v.type || "string"}">` +
-        v.enum.map(e => `<option ${e === v.default ? "selected" : ""}>${e}</option>`).join("") + `</select>`;
-    } else if (v.type === "boolean") {
-      html += `<input id="f_${k}" type="checkbox" ${v.default ? "checked" : ""}>`;
-    } else if (v.type === "integer" || v.type === "number") {
-      html += `<input id="f_${k}" type="number" value="${v.default ?? ""}">`;
-    } else {
-      html += `<input id="f_${k}" type="text" value="${String(v.default ?? "").replace(/"/g, "&quot;")}">`;
-    }
-  }
-  html += `<button class="act" onclick="callTool()">调用 ${current.name}</button>`;
-  $("pane").innerHTML = html;
-}
-
-function collect() {
-  const props = (current.inputSchema || {}).properties || {};
-  const args = {};
-  for (const [k, v] of Object.entries(props)) {
-    const el = $("f_" + k);
-    if (v.type === "boolean") { args[k] = el.checked; continue; }
-    const raw = (el.value ?? "").trim();
-    if (raw === "" && !("default" in v)) continue;
-    if (v.type === "integer") args[k] = parseInt(raw || "0", 10);
-    else if (v.type === "number") args[k] = parseFloat(raw || "0");
-    else args[k] = raw;
-  }
-  return args;
-}
-
-async function callTool() {
-  if (!current) return;
-  await call(current.name, collect(), current.name);
-}
-
-renderChips();
-showMode(0);
-</script>
-</body>
-</html>
-"""
-
 
 def _BearerGate(app, token):
     """ASGI wrapper: /mcp requires 'Authorization: Bearer <token>'; the static
@@ -1639,9 +1368,11 @@ def _BearerGate(app, token):
 
 
 def _console_response(request):  # noqa: ARG001 — Starlette passes the Request
+    from importlib.resources import files
     from starlette.responses import HTMLResponse
 
-    return HTMLResponse(_CONSOLE_HTML)
+    LOG.debug("_console_response: serving packaged console")
+    return HTMLResponse(files("si104_console").joinpath("console.html").read_text(encoding="utf-8"))
 
 
 def _run_http():

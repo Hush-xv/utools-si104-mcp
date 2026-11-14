@@ -53,6 +53,20 @@ python -m venv .venv
 
 Linux 同理（`.venv/bin/python`；Linux 还需系统 libusb）。
 
+### macOS（Apple Silicon）免编译运行
+
+仓库内置 arm64 预编译库（libusb 1.0.29 + SI104 SDK 1.0.5，见 `runtime/macos-arm64/README.md`），无需 Homebrew：
+
+```bash
+R=$PWD/runtime/macos-arm64
+export SI104_SDK_LIBRARY=$R/libsi104_sdk.dylib
+export SI104_LIBUSB=$R/libusb-1.0.dylib
+# SI104 Python 绑定来自 Lanmotion SDK 包(未随本仓库分发):
+# PYTHONPATH 指向其 python/ 目录,或安装其 wheels/utools_si104-*.whl
+```
+
+首次运行若被 Gatekeeper 拦截:`xattr -dr com.apple.quarantine runtime/macos-arm64/*.dylib`。
+
 ## 14 个工具
 
 | 工具 | 用途 |
@@ -136,7 +150,7 @@ SI104_MCP_TRANSPORT=http .venv/bin/python server.py     # 默认 http://127.0.0.
 set SI104_MCP_TRANSPORT=http && .venv\Scripts\python.exe server.py
 ```
 
-打开 http://127.0.0.1:8800：左侧自动列出全部 14 个工具 → 填参（schema 默认值与参数说明就位）→ 调用 → 结构化结果渲染。
+打开 http://127.0.0.1:8800：选择设备与 I2C 通道，在主机、从机和 SPI 工作区操作；每路通道的表单草稿独立保存，实际状态可通过“读取四路状态”刷新。VCC 为所有 I2C 通道共享，事务记录仅保留在当前页面会话中。
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
@@ -177,7 +191,7 @@ CI（`.github/workflows/ci.yml`）：ruff + `unit_test.py` + `smoke_test.py`，�
 - **GitHub topics** 建议：`mcp` `model-context-protocol` `i2c` `spi` `usb` `hardware` `ai-tools` `claude-code` `zcode`
 - **MCP Registry**：仓库公开后按 [registry 流程](https://modelcontextprotocol.io/registry/about) 提交（需所有权验证）
 - **Release**：`v1.1.0` annotated tag 的 message 即发布说明；push 时带 `--tags`
-- **传输**：当前仅 stdio；HTTP 模式有意暂缓——避免把万能透传 `si104_raw_request` 暴露到网络，将来启用需绑 localhost 并加鉴权
+- **传输**：stdio 与可选的 HTTP 模式；HTTP 访问边界见“网页控制台”。
 
 ## 边界
 

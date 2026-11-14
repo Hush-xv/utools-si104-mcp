@@ -72,7 +72,8 @@ p1 = start(8801)
 try:
     check("port open", wait_port(8801))
     status, page = http_get("http://127.0.0.1:8801/")
-    check("console page served", status == 200 and "<html" in page and "SI104" in page)
+    check("console page served", status == 200 and "<html" in page and "SI104 工作台" in page
+          and 'id="channels"' in page and 'id="slave"' in page and 'id="spi"' in page)
 
     async def open_flow():
         async with streamablehttp_client("http://127.0.0.1:8801/mcp") as (r, w, _):
@@ -86,7 +87,8 @@ try:
                 res = await s.call_tool("si104_read_vcc", {"channel": 0})
                 check("read_vcc over http (stub rail off)",
                       res.isError is False
-                      and (res.structuredContent or {}).get("output_enabled") is False)
+                      and (res.structuredContent or {}).get("output_enabled") is False
+                      and (res.structuredContent or {}).get("raw_hex") == "0000b80b000000000000")
 
     asyncio.run(open_flow())
 finally:

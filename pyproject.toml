@@ -19,6 +19,10 @@ si104-mcp = "server:main"
 
 [tool.setuptools]
 py-modules = ["server", "si104_stub"]
+packages = ["si104_console"]
+
+[tool.setuptools.package-data]
+si104_console = ["console.html"]
 
 [tool.ruff]
 line-length = 120

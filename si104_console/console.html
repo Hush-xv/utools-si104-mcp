@@ -1,0 +1,686 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>SI104 工作台</title>
+<style>
+:root{font:14px/1.4 "Segoe UI",sans-serif;color:#243341;background:#eef1f3}*{box-sizing:border-box}body{margin:0}button,input,select,textarea{font:inherit;color:inherit}button{cursor:pointer;border:1px solid #aab8c2;background:#fff;padding:7px 12px;border-radius:3px}button:hover{background:#eaf2f6}button:disabled{opacity:.55;cursor:wait}.primary{background:#245b78;border-color:#245b78;color:white}.primary:hover{background:#174861}.top{background:#fff;border-bottom:1px solid #c9d2d8;padding:12px 22px;display:flex;align-items:center;gap:16px;flex-wrap:wrap}.brand{font-size:18px;font-weight:700;letter-spacing:.02em}.sub,.muted{color:#657684;font-size:12px}.spacer{flex:1}.status{display:flex;align-items:center;gap:7px}.dot{width:8px;height:8px;border-radius:50%;background:#9cabb4}.dot.ok{background:#32815c}.dot.bad{background:#b44942}.shell{max-width:1600px;margin:auto;padding:18px 22px}.bar{display:flex;align-items:end;gap:12px;flex-wrap:wrap;margin-bottom:14px}label{display:flex;flex-direction:column;gap:4px;color:#516471;font-size:12px}input,select,textarea{background:white;border:1px solid #aebdc7;border-radius:3px;padding:7px 8px;min-width:0}input:focus,select:focus,textarea:focus,button:focus-visible{outline:2px solid #5f99b6;outline-offset:1px}input[type=checkbox]{width:auto}.mono,textarea,.hex{font-family:Consolas,"SFMono-Regular",monospace}.channels{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:14px 0}.channel{text-align:left;min-height:70px;padding:10px 12px;border:1px solid #c4d0d7;background:#fff;border-radius:3px}.channel.active{border:2px solid #286786;padding:9px 11px;background:#f4f9fb}.channel strong{display:block;font-size:15px}.channel span{color:#6a7c88;font-size:12px}.layout{display:grid;grid-template-columns:minmax(440px,1fr) minmax(320px,.8fr);gap:14px}.panel{background:#fff;border:1px solid #c9d2d8;min-width:0}.panel-head{padding:10px 14px;border-bottom:1px solid #dce3e7;display:flex;align-items:center;gap:10px}.panel-head h2{font-size:15px;margin:0}.body{padding:14px}.tabs{display:flex;border-bottom:1px solid #c9d2d8;background:#f6f8f9}.tabs button{border:0;border-right:1px solid #dce3e7;border-radius:0;background:transparent;padding:10px 18px}.tabs button.active{background:#fff;box-shadow:inset 0 3px #286786;font-weight:600}.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-bottom:12px}.grid .wide{grid-column:span 2}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0}.note{background:#f4f7f8;border-left:3px solid #9aabb5;color:#526775;padding:9px 11px;font-size:12px;margin:10px 0}.warning{border-color:#bb8a32;background:#fff8eb;color:#77561e}.error{border-color:#b34b43;background:#fff4f3;color:#8d302b}.section-title{font-size:13px;font-weight:700;margin:16px 0 9px}textarea{width:100%;min-height:68px;resize:vertical}.result{min-height:170px;max-height:350px;overflow:auto}.result pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:0;font:12px/1.6 Consolas,monospace}.hex-table{border-collapse:collapse;width:100%;font:12px/1.6 Consolas,monospace}.hex-table th,.hex-table td{border-bottom:1px solid #e5ebee;padding:4px;text-align:left}.hex-table th{color:#6b7b85}.history{margin-top:14px}.logwrap{max-height:240px;overflow:auto}.log{width:100%;border-collapse:collapse;font-size:12px;text-align:left}.log th,.log td{padding:7px 10px;border-bottom:1px solid #e6ecef}.log th{position:sticky;top:0;background:#f5f7f8;color:#627480}.log tbody tr{cursor:pointer}.log tbody tr:hover{background:#f2f7f9}.good{color:#28704d}.bad{color:#a33831}.hidden{display:none!important}@media(max-width:850px){.layout{grid-template-columns:1fr}.channels{grid-template-columns:repeat(2,1fr)}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.shell{padding:12px}.top{padding:10px 12px}}
+details summary{cursor:pointer;color:#32647d}details pre{white-space:pre-wrap;overflow-wrap:anywhere}.device-info{margin-bottom:14px}.device-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}.device-grid pre{font:12px/1.5 Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}.vccbar{width:110px;height:6px;background:#e1e8ec;margin-top:4px}.vccbar span{display:block;height:100%;background:#348463}.field-error{color:#a33831;font-size:12px}.logwrap{overflow:auto}.log td.hex{max-width:240px;overflow-wrap:anywhere}.detail-row td{background:#f5f8fa}.addresses button{margin:3px}.result{max-height:none}.result details{margin-top:16px}.result pre{max-height:300px;overflow:auto}
+:root{--space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-6:24px;--control:34px;--surface:#fff;--subtle:#f4f7f8;--line:#d8e0e5;--ink:#243341;--quiet:#697a86;font-size:13px;font-variant-numeric:tabular-nums}button,input,select{min-height:var(--control)}button:disabled{cursor:not-allowed}.shell{padding:var(--space-4) var(--space-6)}.top{gap:var(--space-3);padding:var(--space-3) var(--space-6)}.top .spacer{flex:0}.top label{min-width:170px}.top details{margin-left:auto}.top>div:last-child{display:flex;align-items:center;gap:var(--space-2)}.top>div:last-child .sub{max-width:90px}.vccbar{width:72px;margin:0}.panel{border:0;box-shadow:0 0 0 1px var(--line)}.panel-head{padding:var(--space-3) var(--space-4)}.body{padding:var(--space-4)}.layout{gap:var(--space-3)}.grid{gap:var(--space-2)}.row{align-items:flex-end}.bar{margin-bottom:var(--space-2)}.channels{margin:var(--space-2) 0 var(--space-3)}.channel{min-height:58px;background:var(--subtle);border:0;border-left:3px solid #c4d0d7}.channel.active{padding:10px 12px;border:0;border-left:3px solid #286786;background:#eaf3f7}.device-info{margin-bottom:var(--space-3)}.device-info summary{list-style:none}.device-info summary::-webkit-details-marker{display:none}.device-info .body{padding-top:0}.identity{display:flex;gap:var(--space-4);flex-wrap:wrap;align-items:center}.identity span{white-space:nowrap}.identity .serial{white-space:nowrap}.limits{width:100%;border-collapse:collapse;margin-top:var(--space-3);font-size:12px}.limits td,.limits th{padding:6px 8px;border-bottom:1px solid var(--line);text-align:left}.limits th{background:var(--subtle)}.raw-fields{margin-top:var(--space-3)}.raw-fields pre,.detail-row pre{font:11px/1.45 Consolas,monospace;max-height:230px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere}.register-wrap{overflow:auto;max-height:570px}.registers{width:100%;border-collapse:collapse;font-size:12px;min-width:560px}.registers th,.registers td{padding:5px 4px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}.registers th{background:var(--subtle);position:sticky;top:0}.registers input,.registers select{width:100%;min-width:55px;height:30px;padding:3px 5px;font:12px Consolas,monospace}.registers .addr{min-width:70px}.registers .value{min-width:110px}.registers .changed{background:#fff1c4}.registers .stale{color:var(--quiet)}.registers button{padding:4px 6px;min-height:30px}.registers .actions{white-space:nowrap}.register-tools{display:flex;align-items:center;gap:var(--space-2);flex-wrap:wrap;padding:var(--space-3) var(--space-4);border-bottom:1px solid var(--line)}.register-tools label{flex-direction:row;align-items:center}.register-tools input{width:90px}.operation-status{padding:var(--space-2) var(--space-4);background:var(--subtle);min-height:34px}.operation-status.error{background:#fff3f0}.operation-status button{margin-left:var(--space-2)}.scan-addresses{padding:var(--space-2) var(--space-4);font-size:12px}.scan-addresses button{margin:2px;padding:3px 7px;min-height:26px}.log td:nth-child(6),.log td:nth-child(9){text-align:right}.log td:nth-child(7){font:12px Consolas,monospace}.log td.empty{color:#9aa8b1}.field-error:empty{display:none}@media(max-width:1100px){.layout{grid-template-columns:1fr}.register-wrap{max-height:none}}@media(max-width:850px){.top details{margin-left:0}}
+.layout{grid-template-columns:minmax(400px,.75fr) minmax(640px,1.25fr)}.registers th:nth-child(1){width:36%}.registers th:nth-child(2){width:auto}.registers th:nth-child(3){width:36px;padding:4px 1px;text-align:center}.registers th:nth-child(4){width:90px}.registers td:nth-child(1) input:first-child{width:36%;min-width:52px}.registers td:nth-child(1) select{width:28%;min-width:0}.registers td:nth-child(1) .size{width:28%;min-width:42px}.registers td:nth-child(2) input{width:100%}.status-cell small{display:block;color:#a33831;font-size:10px}.log td:nth-child(4),.log td:nth-child(5),.log td:nth-child(6),.log td:nth-child(9){text-align:right}.top details[open]>label{top:38px}.top details[open]>button{top:108px}
+.top .device-select{display:flex;align-items:center;gap:8px;min-width:180px;white-space:nowrap}.top .device-select select{flex:1}.top>div:last-child .sub{flex:0 0 auto;min-width:max-content}.range-hint{white-space:nowrap}
+@media(max-width:1100px){.layout{grid-template-columns:1fr}}.operation-status{overflow-wrap:anywhere}
+.top .connection-settings{position:relative}
+.connection-settings summary{display:flex;align-items:center;min-height:var(--control);white-space:nowrap}
+.connection-settings summary::before{content:'▸';margin-right:4px}
+.connection-settings[open] summary::before{content:'▾'}
+.connection-popover{position:absolute;top:calc(100% + 4px);right:0;z-index:10;display:grid;gap:8px;width:min(240px,calc(100vw - 32px));background:var(--surface);border:1px solid var(--line);padding:12px;box-shadow:0 3px 10px #24334126}
+[data-bus][aria-disabled=true]{opacity:.55;cursor:wait}
+.registers tbody.polling .status-light.good{animation:pulse 1s ease-in-out infinite}
+@media(max-width:540px){.connection-popover{right:auto;left:0}}
+.logwrap{overflow-anchor:none;scrollbar-gutter:stable}
+.log{table-layout:fixed;min-width:740px}
+.log>thead th:nth-child(1){width:86px}
+.log>thead th:nth-child(2){width:68px}
+.log>thead th:nth-child(3){width:132px}
+.log>thead th:nth-child(4),.log>thead th:nth-child(5){width:68px}
+.log>thead th:nth-child(6),.log>thead th:nth-child(8){width:56px}
+.log>thead th:nth-child(9){width:74px}
+.log>thead th,.log>tbody>tr:not(.detail-row)>td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.log :is(th,td):is(:nth-child(4),:nth-child(5),:nth-child(6),:nth-child(9)){text-align:right}
+.log :is(th,td):nth-child(1){font-family:Consolas,monospace;font-variant-numeric:tabular-nums}
+.log td:nth-child(7){max-width:none}
+.log td[colspan]{text-align:left;white-space:normal;overflow:hidden}
+.log .detail-row,.log .detail-row tr{cursor:default}
+.transaction-detail{padding:8px 6px;display:grid;gap:12px}
+.detail-fields{display:grid;grid-template-columns:repeat(auto-fit,minmax(145px,1fr));gap:8px 16px;margin:0}
+.detail-fields div{min-width:0}
+.detail-fields dt{color:var(--quiet)}
+.detail-fields dd{margin:2px 0 0;overflow-wrap:anywhere}
+.detail-hex{overflow:auto}
+.transaction-detail .detail-hex + .detail-fields{border-top:1px solid var(--line);padding-top:8px}
+.log .hex-table{min-width:0;width:max-content}
+.log .hex-table :is(th,td){position:static;text-align:left;white-space:pre;padding:3px 6px;font-family:inherit}
+.log .hex-table caption{text-align:left;font-family:"Segoe UI",sans-serif;font-weight:600;padding-bottom:4px}
+.log .hex-table th{background:transparent}
+.operation-status.error{border-left:3px solid #b44942}
+#workbench:not([data-role=master])[data-role] :is(.register-tools,.register-wrap,#registerContext,#scanAddresses){display:none}
+.registers .changed{animation:register-flash 500ms ease-out}
+@keyframes register-flash{from{background:#ffd876}to{background:#fff1c4}}
+@media(prefers-reduced-motion:reduce){.registers .changed{animation:none}}
+</style></head><body>
+<header class="top"><div><div class="brand">SI104 工作台</div><div class="sub">USB / I²C / SPI 调试</div></div><div class="status"><span id="lamp" class="dot"></span><span id="connection">正在连接服务</span></div><span class="spacer"></span><div class="device-select"><span class="sub">设备</span><select id="device"><option value="">自动选择</option></select></div><button id="refresh">刷新设备</button><details class="connection-settings"><summary>连接设置</summary><div class="connection-popover"><label>访问令牌（可选）<input id="token" type="password" autocomplete="off" placeholder="Bearer token"></label><button id="connect">连接</button></div></details><div><div class="sub">共享 VCC · 四通道共用</div><strong id="vcc">未知</strong><button id="vccRead">读取 VCC</button> <button id="vccToggle">控制 VCC</button></div></header>
+<main class="shell"><section class="panel device-info"><div class="panel-head"><strong>设备</strong><div class="identity mono" id="deviceIdentity"><span class="muted">正在读取设备信息</span></div></div><details><summary class="muted" style="padding:0 16px 8px">能力与原始字段</summary><div class="body" id="deviceInfo"></div></details></section><div class="bar"><div><strong>总线操作</strong><div class="muted">通道卡片显示设备最近读取的状态；表单参数是本页面草稿。</div></div><span class="spacer"></span><button id="refreshChannels">读取四路状态</button></div><div id="channels" class="channels"></div>
+<div class="layout"><section class="panel"><div class="tabs"><button data-tab="master" class="active">I²C 主机</button><button data-tab="slave">I²C 从机</button><button data-tab="spi">SPI</button></div><div class="body">
+<div id="i2cCommon"><div class="panel-head" style="padding:0 0 10px;margin-bottom:12px"><h2 id="channelTitle">I²C 0</h2><span class="muted">当前通道草稿</span></div><div class="grid"><label id="hostModeField">速率<select id="mode"><option value="0">100 kHz</option><option value="1">400 kHz</option><option value="2">1 MHz</option><option value="3">自定义</option></select></label><label id="hostHzField">自定义 Hz<input id="busHz" type="number" value="100000" min="10000" max="1000000"><small class="range-hint" title="10,000–1,000,000 Hz">10 kHz–1 MHz</small></label><label id="hostBitsField">地址位宽<select id="addrBits"><option value="7">7 bit</option><option value="10">10 bit（主机）</option></select></label><label id="hostAddressField">目标设备地址<input class="mono" id="address" value="0x42"></label></div></div>
+<div id="master"><div class="row"><button id="scan">扫描 0x08–0x77</button><span class="muted">扫描执行单字节读取，可能改变目标设备状态。</span></div><div class="section-title">寄存器访问</div><div class="grid"><label>寄存器地址<input class="mono" id="reg" value="0x00"></label><label>指针位宽<select id="regBits"><option value="8">8 bit</option><option value="16">16 bit · MSB 先行</option></select></label><label>读取字节数<input id="regSize" type="number" value="16" min="1" max="512"></label></div><label>写入数据（HEX）<textarea id="regData" class="mono" placeholder="例如 DE AD BE EF"></textarea></label><div class="row"><button class="primary" id="regRead">读取寄存器</button><button id="regWrite">写入寄存器</button></div><div class="section-title">原始事务</div><label>发送数据（HEX，可留空）<textarea id="rawTx" placeholder="写入数据"></textarea></label><div class="row"><label>接收字节数<input id="rawRx" type="number" min="0" max="512" value="0"></label><button id="rawRun">执行写后读</button></div><div class="note">写后读为一次重复 START 事务。寄存器写入的指针和数据合计最多 504 字节；目标器件可能限制跨页访问。</div></div>
+<div id="slave" class="hidden"><div class="grid"><label>从机地址<input class="mono" id="slaveAddress" value="0x42"></label><label>从机逻辑模式<select id="slaveMode"><option value="0">原始缓冲</option><option value="1">邮箱</option><option value="2">寄存器</option></select></label><label><span id="slaveSizeLabel">读取长度</span><input id="slaveSize" type="number" value="16" min="1" max="512"></label></div><label><span id="slaveDataLabel">从机发送缓冲（HEX）</span><textarea id="slaveData" placeholder="外部主机可读取的数据"></textarea></label><div id="slaveModeHelp" class="note">原始缓冲：写入的数据供外部主机读取；读操作读取主机写入的数据。</div><div class="row"><button class="primary" id="slaveWrite">配置并写入</button><button id="slaveRead">配置并读取</button></div><div class="note warning">从机地址固定为 7 bit。首次操作会配置通道；同通道主机操作会覆盖从机配置。</div></div>
+<div id="spi" class="hidden"><div class="grid"><label>常用时钟<select id="spiPreset"><option value="50000">50 kHz</option><option value="100000">100 kHz</option><option value="400000">400 kHz</option><option value="1000000" selected>1 MHz</option><option value="10000000">10 MHz</option><option value="40000000">40 MHz</option><option value="custom">自定义</option></select></label><label>时钟 Hz<input id="spiHz" type="number" value="1000000" min="50000" max="40000000"><small class="range-hint" title="50,000–40,000,000 Hz">50 kHz–40 MHz</small></label><label>模式<select id="spiMode"><option value="0">Mode 0</option><option value="1">Mode 1</option><option value="2">Mode 2</option><option value="3">Mode 3</option></select></label><label>接收字节数<input id="spiRx" type="number" value="0" min="0" max="512"></label><label>位序<select id="spiOrder"><option value="0">MSB first</option><option value="1">LSB first</option></select></label></div><label>发送数据（HEX）<textarea id="spiTx" placeholder="例如 9F 00 00 00"></textarea></label><div class="row"><button class="primary" id="spiRun">执行传输</button><button id="spiStatus">读取发送状态</button><button id="spiAbort">中止 SPI</button></div><div class="note">普通传输：TX 最多 504 字节，RX 最多 512 字节。中止不能撤销已经发生的总线操作。</div></div></div></section>
+<section class="panel" id="workbench"><div class="panel-head"><h2 id="workbenchTitle">寄存器表</h2><span id="registerContext" class="muted mono"></span></div><div class="register-tools"><button id="addRegister">添加行</button><button id="pollToggle">开始轮询</button><label>间隔 ms <input id="pollInterval" type="number" min="500" value="1000"></label><span class="muted">逐行读取，跳过编辑和待写入的行</span></div><div id="operationStatus" class="operation-status" role="status">等待操作</div><div id="scanAddresses" class="scan-addresses hidden"></div><div class="register-wrap"><table class="registers"><thead><tr><th>寄存器 / 指针长度</th><th>值 HEX</th><th title="操作状态">状态</th><th>操作</th></tr></thead><tbody id="registerRows"></tbody></table></div></section></div>
+<section class="panel history"><div class="panel-head"><h2>事务记录</h2><span class="muted">点击展开详情 · 仅保留当前页面会话</span><span class="spacer"></span><button id="clear">清空</button></div><div class="logwrap"><table class="log"><thead><tr><th>时间</th><th>通道</th><th>操作</th><th>地址</th><th>寄存器</th><th>长度</th><th>数据 HEX</th><th>状态</th><th>耗时</th></tr></thead><tbody id="history"></tbody></table></div></section></main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);const fields=['mode','busHz','addrBits','address','reg','regBits','regSize','regData','rawTx','rawRx','slaveAddress','slaveMode','slaveSize','slaveData'];
+const defaults=()=>Object.fromEntries(fields.map(id=>[id,$(id).value]));const drafts=Array.from({length:4},defaults), states=Array(4).fill(null), infoByChannel=Array(4).fill(null);let channel=0, tab='master', seq=0, connected=false, busy=false, devices=[], registerRows=[], pollTimer=null, polling=false, rowSeq=0, loadedRegisterKey;
+function debug(message,details){console.debug('[SI104]',message,details??'');} // TODO: remove debug logging before release
+function setBusy(value) {
+ busy = value;
+ $('device').disabled = value;
+ document.querySelectorAll('[data-bus]').forEach(control => {
+  const locked = value && !(polling && control.id === 'pollToggle');
+  if (locked) control.setAttribute('aria-disabled', 'true');
+  else control.removeAttribute('aria-disabled');
+ });
+ renderVccButtons();
+}
+function saveDraft() {
+ for (const id of fields) drafts[channel][id] = $(id).value;
+}
+function loadDraft() {
+ for (const id of fields) $(id).value = drafts[channel][id];
+ $('channelTitle').textContent = `I²C ${channel}`;
+ renderDeviceInfo(infoByChannel[channel], channel);
+ for (const id of ['regData','rawTx','slaveData','reg']) $(id).dispatchEvent(new Event('input'));
+ if (tab === 'slave') renderSlaveMode();
+ renderChannels();
+ loadRegisterRows();
+}
+function renderChannels() {
+ const root = $('channels');
+ states.forEach((state, index) => {
+  let button = root.children[index];
+  if (!button) {
+   button = document.createElement('button');
+   button.dataset.bus = '';
+   const title = document.createElement('strong');
+   title.textContent = `I²C ${index}`;
+   button.append(title, document.createElement('span'));
+   button.onclick = () => {
+    if (busy || channel === index) return;
+    stopPolling('切换通道，轮询已停止');
+    saveDraft();
+    channel = index;
+    loadDraft();
+   };
+   root.append(button);
+  }
+  const className = 'channel' + (index === channel ? ' active' : '');
+  if (button.className !== className) button.className = className;
+  const caption = button.lastElementChild;
+  const slave = state?.initialized && state.role === 1;
+  const text = !state ? '状态未知' : state.error ? '状态读取失败' : !state.initialized ? '设备未配置'
+   : slave ? `从机 · 地址 ${hexAddress(state.slave_addr)} · 外部访问 ${state.req_count ?? 0} 次 / 错误 ${state.err_count ?? 0}`
+   : `主机 · ${state.bus_hz ?? '?'} Hz`;
+  if (caption.textContent !== text) caption.textContent = text;
+  const tooltip = slave ? '设备通道累计计数，包含此前的访问与错误。' : '';
+  if (button.title !== tooltip) button.title = tooltip;
+ });
+}
+function toggleTab(nextTab) {
+ if (busy || nextTab === tab) return;
+ stopPolling('切换工作区，轮询已停止');
+ saveDraft();
+ tab = nextTab;
+ document.querySelectorAll('[data-tab]').forEach(button => button.classList.toggle('active', button.dataset.tab === tab));
+ for (const id of ['master','slave','spi']) $(id).classList.toggle('hidden', id !== tab);
+ $('i2cCommon').classList.toggle('hidden', tab === 'spi');
+ for (const id of ['hostModeField','hostHzField','hostBitsField','hostAddressField']) $(id).classList.toggle('hidden', tab !== 'master');
+ $('workbench').dataset.role = tab;
+ $('workbenchTitle').textContent = tab === 'master' ? '寄存器表' : '操作结果';
+ if (tab === 'slave') renderSlaveMode();
+ debug('workbench switched', {tab, channel});
+}
+function renderSlaveMode(){const mode=Number($('slaveMode').value),labels=[['读取长度','发送缓冲 HEX','原始缓冲：外部主机读取发送缓冲；本机读取外部主机写入的数据。'],['邮箱读取长度','邮箱发送数据 HEX','邮箱模式按消息队列收发数据；读取弹出收到的消息。'],['寄存器读取长度','寄存器写入数据 HEX','寄存器模式用首字节作为寄存器地址，后续字节为写入值。']][mode];$('slaveSizeLabel').textContent=labels[0];$('slaveDataLabel').textContent=labels[1];$('slaveModeHelp').textContent=labels[2];$('slaveData').placeholder=mode===0?'外部主机可读取的数据':mode===1?'放入邮箱的消息数据':'寄存器地址后接写入数据'}
+function number(id,min,max){const raw=$(id).value.trim();if(!/^(?:0x[0-9a-f]+|[0-9]+)$/i.test(raw))throw Error(`${id}：请输入整数或 0x 十六进制`);const n=Number(raw);if(!Number.isSafeInteger(n)||n<min||n>max)throw Error(`${id}：范围 ${min}–${max}`);return n}
+function hex(id,max,required=false){let v=$(id).value.trim().replace(/^0x/i,'').replace(/\s/g,'');if(!/^(?:[0-9a-f]{2})*$/i.test(v))throw Error('HEX 数据必须由完整字节组成');if(v.length/2>max)throw Error(`数据最多 ${max} 字节`);if(required&&!v)throw Error('请填写发送数据');return v.toLowerCase()}
+function serial(){return $('device').value||null}function common(){const slave=tab==='slave',mode=slave?0:number('mode',0,3);return{serial:serial(),channel,mode,bus_hz:slave?100000:mode===3?number('busHz',10000,1000000):100000}}
+function decode(text){let s=text||'';const p=s.indexOf('{');if(p>=0)s=s.slice(p);try{return JSON.parse(s)}catch{return {error:text||'服务器未返回结果'}}}
+async function rpc(method,params,notify=false){const id=++seq,body={jsonrpc:'2.0',method,...(notify?{}:{id}),params};const headers={'Content-Type':'application/json','Accept':'application/json, text/event-stream'};if($('token').value)headers.Authorization='Bearer '+$('token').value;debug('rpc start',{method,id});const res=await fetch('/mcp',{method:'POST',headers,body:JSON.stringify(body)});if(!res.ok)throw Error(`服务返回 HTTP ${res.status}`);if(notify)return;const ct=res.headers.get('content-type')||'';let payload;if(ct.includes('text/event-stream')){const data=(await res.text()).split(/\r?\n/).filter(x=>x.startsWith('data:')).map(x=>{try{return JSON.parse(x.slice(5).trim())}catch{return null}});payload=data.find(x=>x&&x.id===id)}else payload=await res.json();if(!payload||payload.id!==id)throw Error('MCP 响应缺失或请求编号不匹配');if(payload.error)throw Error(payload.error.message||'MCP 请求失败');debug('rpc complete',{method,id});return payload.result}
+function clean(o){if(Array.isArray(o))return o.map(clean);if(o&&typeof o==='object')return Object.fromEntries(Object.entries(o).filter(([,v])=>v!==null).map(([k,v])=>[k,clean(v)]));return o}
+function hexAddress(value, digits=0) {
+ const address = typeof value === 'number' ? value : /^0x[0-9a-f]+$/i.test(value) ? Number(value) : NaN;
+ return Number.isInteger(address) ? '0x' + address.toString(16).toUpperCase().padStart(digits, '0') : '—';
+}
+
+const errorCodes = {
+ '-1':'参数无效', '-2':'找不到设备', '-3':'接口或设备忙', '-4':'操作超时',
+ '-5':'USB 连接断开', '-6':'设备回复格式错误', '-7':'设备不支持该操作',
+ '-8':'USB 或其他输入输出错误', '-9':'缓冲区太小', '-10':'设备拒绝请求',
+ '-11':'检测到多台设备，请指定序列号',
+};
+
+function scanAbortAt(data) {
+ return hexAddress(data.aborted_at || /aborted at (0x[0-9a-f]+)/i.exec(data.error || '')?.[1], 2);
+}
+
+function failed(entry) {
+ const {code, firmware_status, error} = entry.data || {};
+ return !entry.ok || Boolean(error || Number(code) || Number(firmware_status));
+}
+
+function vccMismatch(entry) {
+ const data = entry.data || {};
+ return entry.name === 'si104_vcc_control' && typeof data.output_enabled === 'boolean'
+  && typeof entry.args?.enable === 'boolean' && data.output_enabled !== entry.args.enable;
+}
+
+function failureText(entry) {
+ const data = entry.data || {};
+ if (vccMismatch(entry)) {
+  return `共享 VCC ${entry.args.enable ? '使能' : '关断'}未生效。设备回读为${data.output_enabled ? '已使能' : '已关断'}`;
+ }
+ const status = Number(data.firmware_status);
+ const address = entry.name === 'si104_i2c_scan' ? scanAbortAt(data) : '—';
+ const prefix = entry.name !== 'si104_i2c_scan' ? '' : address === '—' ? '扫描中止：' : `扫描中止于 ${address}：`;
+ const reason = {
+  7:'目标设备未应答',
+  8:'设备事务超时',
+  11:'共享 VCC 未使能（NO_POWER），请检查接线后使能 VCC',
+ }[status] || errorCodes[data.code]
+  || (entry.label === '输入检查' && /[㐀-鿿]/.test(data.error || '') ? data.error : '未能完成请求');
+ const timeoutHint = status === 8 && address === '0x08' ? '。首地址超时，另一通道的从机可能卡住总线，可检查接线并重新初始化该通道' : '';
+ const completionHint = data.completion_unknown ? '。操作可能已发生，请先核对设备状态' : '';
+ return prefix + reason + timeoutHint + completionHint;
+}
+
+function show(entry, prefix='') {
+ const data = entry.data || {}, isError = failed(entry), box = $('operationStatus');
+ box.className = 'operation-status' + (isError ? ' error' : '');
+ const text = document.createElement('span');
+ let message;
+ if (isError) message = failureText(entry);
+ else if (entry.name === 'si104_i2c_scan') message = data.found?.length ? `扫描完成：${data.found.length} 个 ACK 地址。点击地址切换目标，再添加寄存器行。` : '扫描完成：未发现 ACK 地址';
+ else if (entry.name === 'si104_spi_transfer') {
+  const tx = String(entry.args.tx_hex || '').replace(/\s/g,'').toUpperCase(), rx = String(data.rx_hex || '').replace(/\s/g,'').toUpperCase();
+  message = tx && tx.length === rx.length
+   ? tx === rx ? 'SPI 回环 OK：RX 与 TX 一致。数据一致不能单独证明硬件完好。' : 'SPI 回环不匹配：RX 与 TX 不一致'
+   : `SPI 传输完成：接收 ${data.rx_bytes ?? rx.length / 2} 字节`;
+ } else if (data.data_hex != null || data.rx_hex != null) {
+  const bytes = (data.data_hex ?? data.rx_hex).length / 2;
+  message = `${entry.label}：收到 ${bytes} 字节，完整数据见事务详情`;
+ } else if (data.written_bytes != null) message = `${entry.label}：已写入 ${data.written_bytes} 字节`;
+ else if (data.state != null) message = `${entry.label}：${data.state}`;
+ else if (entry.name === 'si104_enumerate') message = `发现 ${data.count ?? 0} 台 SI104 设备`;
+ else if (entry.name === 'si104_device_info') message = `I²C ${entry.args.channel} 状态已更新`;
+ else if (entry.name === 'si104_vcc_control' || entry.name === 'si104_read_vcc') message = `共享 VCC：${data.output_enabled ? '已使能' : '已关断'}，${data.measured_mv ?? '未知'} mV`;
+ else message = `${entry.label}：已完成，见事务记录`;
+ text.textContent = prefix + message;
+ box.replaceChildren(text);
+ if (isError && Number(data.firmware_status) === 11) {
+  const button = document.createElement('button');
+  button.textContent = '使能共享 VCC';
+  button.dataset.bus = '';
+  button.onclick = () => run(() => controlVcc(true, entry.args?.channel ?? channel, entry.args?.serial ?? null));
+  box.append(button);
+ }
+ if (entry.name === 'si104_i2c_scan') {
+  const addresses = data.found ?? data.found_before_abort ?? [], area = $('scanAddresses');
+  const buttons = addresses.map(raw => {
+   const address = hexAddress(raw, 2), button = document.createElement('button');
+   button.textContent = address;
+   button.dataset.bus = '';
+   button.onclick = () => {
+    if (busy) return;
+    if (serial() !== (entry.args.serial ?? null)) { window.alert('该结果属于其他设备，请先选择原设备'); return; }
+    if (channel === entry.args.channel && $('addrBits').value === '7' && Number($('address').value) === Number(address) && tab === 'master') return;
+    stopPolling('切换目标地址，轮询已停止');
+    saveDraft();
+    channel = entry.args.channel;
+    drafts[channel].addrBits = '7';
+    drafts[channel].address = address;
+    loadDraft();
+    toggleTab('master');
+   };
+   return button;
+  });
+  area.replaceChildren(...buttons);
+  area.classList.toggle('hidden', !buttons.length);
+ }
+ if (isError || !entry.quiet) debug('show result', {name:entry.name, ok:!isError});
+}
+
+function appendFields(parent, fields) {
+ const list = document.createElement('dl');
+ list.className = 'detail-fields';
+ for (const [label, value] of fields) {
+  if (value == null) continue;
+  const group = document.createElement('div'), term = document.createElement('dt'), description = document.createElement('dd');
+  term.textContent = label;
+  description.textContent = value;
+  group.append(term, description);
+  list.append(group);
+ }
+ parent.append(list);
+}
+
+function appendHex(parent, label, data) {
+ if (!data) return;
+ const bytes = data.toUpperCase().match(/../g);
+ const wrapper = document.createElement('div'), table = document.createElement('table'), head = document.createElement('thead'), body = document.createElement('tbody');
+ wrapper.className = 'detail-hex';
+ table.className = 'hex-table';
+ const caption = document.createElement('caption');
+ caption.textContent = `${label} · ${bytes.length} 字节`;
+ const header = document.createElement('tr');
+ const columns = ['偏移', ...Array.from({length:16}, (_, i) => i.toString(16).toUpperCase().padStart(2, '0')), 'ASCII'];
+ for (const column of columns) {
+  const cell = document.createElement('th');
+  cell.scope = 'col';
+  cell.textContent = column;
+  header.append(cell);
+ }
+ head.append(header);
+ for (let offset = 0; offset < bytes.length; offset += 16) {
+  const row = document.createElement('tr'), chunk = bytes.slice(offset, offset + 16);
+  const ascii = chunk.map(byte => {
+   const n = parseInt(byte, 16);
+   return n >= 32 && n <= 126 ? String.fromCharCode(n) : '.';
+  }).join('');
+  const values = [hexAddress(offset, 4), ...chunk, ...Array(16 - chunk.length).fill(''), ascii];
+  for (const value of values) {
+   const cell = document.createElement('td');
+   cell.textContent = value;
+   row.append(cell);
+  }
+  body.append(row);
+ }
+ table.append(caption, head, body);
+ wrapper.append(table);
+ parent.append(wrapper);
+}
+
+function transactionPayloads(entry) {
+ const a = entry.args || {}, d = entry.data || {};
+ const normalize = value => {
+  const hex = String(value ?? '').replace(/^0x/i, '').replace(/\s/g, '');
+  return /^(?:[0-9a-f]{2})+$/i.test(hex) ? hex.toUpperCase() : '';
+ };
+ const registerAction = entry.name === 'si104_i2c_read_regs' ? 'read'
+  : entry.name === 'si104_i2c_write_regs' ? 'write' : entry.registerAction;
+ let sent = normalize(a.tx_hex || a.data_hex);
+ if (registerAction && entry.name === 'si104_i2c_transfer') {
+  // The raw 10-bit transfer includes the register pointer before any value bytes.
+  sent = sent.slice(entry.regBits / 4);
+ }
+ return {
+  received: [d.rx_hex, d.data_hex, d.reply_hex, d.raw_hex].map(normalize).find(Boolean) || '',
+  sent,
+  registerAction,
+ };
+}
+
+function renderTransactionDetail(cell, entry) {
+ const a = entry.args || {}, d = entry.data || {};
+ cell.className = 'transaction-detail';
+ const {received, sent, registerAction} = transactionPayloads(entry);
+ const isVcc = entry.name === 'si104_read_vcc' || entry.name === 'si104_vcc_control';
+ if (registerAction === 'read') {
+  appendHex(cell, '寄存器读回 HEX', received);
+ } else if (registerAction === 'write') {
+  appendHex(cell, failed(entry) ? '尝试写入的寄存器 HEX' : '寄存器写入 HEX', sent);
+ } else {
+  appendHex(cell, isVcc ? 'VCC 回复 HEX' : '接收 HEX', received);
+  appendHex(cell, '发送 HEX', sent);
+ }
+ const addressBits = a.addr_10bit == null ? 7 : a.addr_10bit ? 10 : 7;
+ const parameters = [
+  ['操作', entry.label], ['通道', entry.channel], ['设备', a.serial],
+  ['地址', a.address != null || a.slave_addr != null ? hexAddress(a.address ?? a.slave_addr, 2) : null],
+  ['地址位宽', a.address != null ? `${addressBits} bit` : a.slave_addr != null ? '7 bit' : null],
+  ['寄存器', entry.reg != null || a.reg != null ? hexAddress(entry.reg ?? a.reg, 2) : null],
+  ['指针位宽', a.reg_addr_16bit != null ? (a.reg_addr_16bit ? '16 bit' : '8 bit') : entry.regBits ? `${entry.regBits} bit` : null],
+  ['接收长度', a.size ?? a.rx_size], ['I²C 速率', a.mode != null ? `${[100000, 400000, 1000000, a.bus_hz][a.mode]} Hz` : null],
+  ['SPI 时钟', a.sclk_hz != null ? `${a.sclk_hz} Hz` : null],
+  ['SPI 模式', a.cpol != null ? (a.cpol * 2 + a.cpha) : null],
+  ['位序', a.lsb_first != null ? (a.lsb_first ? 'LSB 先行' : 'MSB 先行') : null],
+  ['从机模式', ['原始缓冲','邮箱','寄存器'][a.slave_mode]],
+  ['扫描范围', d.range?.map(value => hexAddress(value, 2)).join('–')],
+  ['使能 VCC', a.enable != null ? (a.enable ? '是' : '否') : null],
+  ['永久保存', a.persist != null ? (a.persist ? '是' : '否') : null],
+  ['VCC 回读状态', d.output_enabled != null ? (d.output_enabled ? '已使能' : '已关断') : null],
+  ['实测电压', d.measured_mv != null ? `${d.measured_mv} mV` : null],
+  ['耗时', `${entry.ms} ms`],
+ ];
+ appendFields(cell, parameters);
+ if (failed(entry)) {
+  const message = document.createElement('div');
+  message.className = 'note error';
+  message.textContent = failureText(entry);
+  cell.append(message);
+  appendFields(cell, [['错误码', d.code], ['含义', d.code != null ? (errorCodes[d.code] || '未识别的错误码') : null], ['固件状态', d.firmware_status], ['后端错误码', d.backend_code]]);
+ }
+ const found = d.found ?? d.found_before_abort;
+ if (found?.length) appendFields(cell, [[failed(entry) ? '中止前应答地址' : '应答地址', found.map(address => hexAddress(address, 2)).join('、')]]);
+}
+
+function logEntry(entry) {
+ const root = $('history'), wrap = root.parentElement.parentElement;
+ const oldTop = wrap.scrollTop;
+ const keepPosition = oldTop > 0 || root.querySelector('.detail-row:not(.hidden)') || root.contains(document.activeElement);
+ const row = document.createElement('tr'), detail = document.createElement('tr'), cell = document.createElement('td');
+ const a = entry.args || {}, d = entry.data || {};
+ const {received, sent, registerAction} = transactionPayloads(entry);
+ const data = received || sent;
+ const length = registerAction === 'write' ? d.written_bytes ?? (sent.length ? sent.length / 2 : '—')
+  : d.size ?? d.rx_bytes ?? d.written_bytes ?? a.size ?? a.rx_size ?? (data.length ? data.length / 2 : '—');
+ const values = [entry.time, entry.channel, entry.label, hexAddress(a.address ?? a.slave_addr), hexAddress(entry.reg ?? a.reg),
+  length, data || '—', failed(entry) ? '失败' : '成功', `${entry.ms} ms`];
+ for (const value of values) {
+  const td = document.createElement('td');
+  td.textContent = value;
+  if (value === '—') td.className = 'empty';
+  row.append(td);
+ }
+ detail.className = 'detail-row hidden';
+ cell.colSpan = 9;
+ detail.append(cell);
+ row.tabIndex = 0;
+ row.setAttribute('aria-expanded', 'false');
+ row.onclick = () => {
+  const open = detail.classList.toggle('hidden') === false;
+  row.setAttribute('aria-expanded', String(open));
+  if (open && !cell.firstChild) {
+   const content = document.createElement('div');
+   renderTransactionDetail(content, entry);
+   cell.append(content);
+  }
+  if (open) {
+   const bounds = wrap.getBoundingClientRect();
+   const detailBounds = detail.getBoundingClientRect();
+   const visibleHeight = Math.min(detailBounds.height, 88);
+   if (detailBounds.top + visibleHeight > bounds.bottom) {
+    wrap.scrollTop += detailBounds.top + visibleHeight - bounds.bottom;
+   }
+  }
+ };
+ row.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); row.click(); } };
+ root.prepend(row, detail);
+ if (keepPosition) wrap.scrollTop = oldTop + row.getBoundingClientRect().height;
+ if (root.childElementCount > 200) {
+  root.lastElementChild.remove();
+  root.lastElementChild.remove();
+ }
+}
+async function call(name,args,label,where=`I²C ${channel}`,meta={}){const start=performance.now();let data,ok=false;debug('tool entry',{name,channel:args.channel});try{const r=await rpc('tools/call',{name,arguments:args});data=clean(r.structuredContent||decode(r.content?.[0]?.text));ok=!failed({ok:!r.isError,data})&&!vccMismatch({name,args,data})}catch(e){data={error:e.message};debug('call failed',{name,error:e.message})}const entry={time:new Date().toLocaleTimeString(),channel:where,label,name,args:{...args},...meta,ok,data,ms:Math.round(performance.now()-start)};debug('tool exit',{name,ok,ms:entry.ms});logEntry(entry);if(!meta.quiet)show(entry);return entry}
+async function run(fn){if(busy)return;setBusy(true);try{await fn()}catch(e){const entry={time:new Date().toLocaleTimeString(),channel:`I²C ${channel}`,label:'输入检查',ok:false,data:{error:e.message},ms:0};logEntry(entry);show(entry)}finally{setBusy(false)}}
+async function refreshDevices(){const prev=$('device').value;const r=await call('si104_enumerate',{},'枚举设备','设备');if(!r.ok)return;devices=r.data.devices||[];const s=$('device');s.replaceChildren(new Option('自动选择',''));for(const d of devices)s.add(new Option(d.serial||`USB ${d.bus}:${d.address}`,d.serial||''));if([...s.options].some(o=>o.value===prev))s.value=prev;states.fill(null);infoByChannel.fill(null);renderDeviceInfo(null,channel);renderVcc({});renderChannels();loadRegisterRows()}
+function infoDevice(d){return devices.find(x=>x.serial===(d?.info?.serial||serial()))||devices[0]||{}}
+function firmwareLabel(d){const hex=String(d?.version_hex||'').replace(/^0x/i,'').toUpperCase();if(hex==='01030300')return '1.3.0 (01030300)';const value=d?.info?.firmware_version??d?.info?.firmware;return typeof value==='string'&&/\D/.test(value)?`${value}${hex?` (${hex})`:''}`:hex?hex:'未知'}
+function renderSdkFields(root, data) {
+ const details = document.createElement('details'), summary = document.createElement('summary');
+ summary.textContent = 'SDK 字段';
+ function fields(value, path) {
+  if (Array.isArray(value) && value.every(item => item == null || typeof item !== 'object')) return [[path, value.join('、')]];
+  if (value && typeof value === 'object') {
+   return Object.entries(value).flatMap(([key, child]) => fields(child, path ? path + ' / ' + key : key));
+  }
+  return [[path, typeof value === 'boolean' ? (value ? '是' : '否') : value]];
+ }
+ details.append(summary);
+ appendFields(details, fields({info:data.info,version_hex:data.version_hex,runtime:data.runtime,i2c:data.i2c,spi:data.spi,vcc:data.vcc}, ''));
+ root.append(details);
+}
+function renderDeviceInfo(d,ch){
+ const root=$('deviceInfo'),identity=$('deviceIdentity');const fieldsOpen=root.querySelector('details')?.open;root.replaceChildren();
+ const info=d?.info||{},dev=infoDevice(d),parts=[['序列号',info.serial||dev.serial||'未知'],['固件',firmwareLabel(d)],['UUID',info.uuid||'未知'],['VID/PID',dev.vid!=null&&dev.pid!=null?`0x${Number(dev.vid).toString(16).toUpperCase().padStart(4,'0')} / 0x${Number(dev.pid).toString(16).toUpperCase().padStart(4,'0')}`:'未知']];
+ if(!identity.children.length || identity.children.length !== parts.length) identity.replaceChildren(...parts.map(() => document.createElement('span')));
+ for (const [index, [label,value]] of parts.entries()) {const el=identity.children[index], text=`${label} ${value}`;if(el.textContent!==text)el.textContent=text;el.className=label==='序列号'?'serial':'';el.title=text}
+ if(!d){root.textContent='尚未读取设备能力';return}
+ const i=d.i2c?.limits||{},s=d.spi?.limits||{},ic=d.i2c?.capabilities||{},sc=d.spi?.capabilities||{},table=document.createElement('table');table.className='limits';
+ const rows=[['项目',`I²C ${ch}`,'SPI'],['协议版本',ic.major!=null?`${ic.major}.${ic.minor}`:'—',sc.major!=null?`${sc.major}.${sc.minor}`:'—'],['接口数量',ic.channels??'—',sc.channels??'—'],['最大发送（字节）',i.tx_max??i.i2c_master_tx??'—',s.tx_max??s.spi_tx??'—'],['最大接收（字节）',i.rx_max??i.i2c_rx??'—',s.rx_max??s.spi_rx??'—'],['寄存器写入上限',i.reg_write_max??'—','—'],['速率范围（Hz）',i.hz_min!=null?`${i.hz_min}–${i.hz_max}`:'10,000–1,000,000',s.hz_min!=null?`${s.hz_min}–${s.hz_max}`:'50,000–40,000,000']];
+ for(const [index,vals] of rows.entries()){const tr=document.createElement('tr');for(const val of vals){const cell=document.createElement(index?'td':'th');cell.textContent=val;tr.append(cell)}table.append(tr)}root.append(table);renderSdkFields(root, d);root.lastElementChild.open=Boolean(fieldsOpen)
+}
+async function readChannels() {
+ let firstFailure;
+ for (let i = 0; i < states.length; i++) {
+  const response = await call('si104_device_info', {serial:serial(), channel:i}, `读取通道 ${i} 状态`, `I²C ${i}`, {quiet:true});
+  if (failed(response) && !firstFailure) firstFailure = response;
+  states[i] = response.ok ? (response.data.i2c?.status || {error:'状态不可用'}) : {error:'状态读取失败'};
+  infoByChannel[i] = response.ok ? response.data : null;
+ }
+ renderChannels();
+ const current = infoByChannel[channel];
+ renderDeviceInfo(current, channel);
+ if (current?.vcc && !current.vcc.error) renderVcc(current.vcc);
+ if (firstFailure) show(firstFailure);
+ else {
+  $('operationStatus').className = 'operation-status';
+  $('operationStatus').textContent = states.some(state => state.error) ? '部分通道状态不可用' : '四路状态已更新';
+ }
+}
+function renderVccButtons(){$('vccToggle').disabled=!$('vcc').dataset.enabled}
+function renderVcc(v){$('vcc').textContent=v.output_enabled==null?'未知':`${v.output_enabled?'已使能':'已关断'} · ${v.measured_mv==null?'电压未知':v.measured_mv+' mV'}`;$('vcc').dataset.enabled=v.output_enabled==null?'':String(v.output_enabled);$('vccToggle').textContent=v.output_enabled==null?'控制 VCC':v.output_enabled?'关断 VCC':'使能 VCC';renderVccButtons()}
+function registerKey(){return `si104-registers:${serial()||devices[0]?.serial||'auto'}:${channel}:${$('addrBits').value}:${$('address').value.trim().toUpperCase()}`}
+function saveRegisterRows(){try{localStorage.setItem(loadedRegisterKey,JSON.stringify(registerRows.map(({reg,width,size,value,pending})=>({reg,width,size,value,pending:pending||undefined}))))}catch(e){debug('register save failed',e.message);$('operationStatus').textContent='寄存器表保存失败，请确认浏览器允许本地存储'}}
+function loadRegisterRows(){const key=registerKey();if(key===loadedRegisterKey)return;stopPolling();loadedRegisterKey=key;try{let saved=JSON.parse(localStorage.getItem(registerKey())||'null');if(!saved){const old=JSON.parse(localStorage.getItem(`si104-registers:${serial()||devices[0]?.serial||'auto'}:${channel}`)||'[]');saved=Array.isArray(old)?old.filter(x=>String(x.address).toUpperCase()===$('address').value.trim().toUpperCase()&&(x.addressBits||7)===Number($('addrBits').value)).map(({reg,width,size,value})=>({reg,width,size,value})):[]}registerRows=Array.isArray(saved)?saved.filter(x=>x&&typeof x==='object').slice(0,200).map(x=>({id:++rowSeq,reg:String(x.reg??$('reg').value),width:x.width===16?16:8,size:Number(x.size)||1,value:String(x.value||'').toUpperCase(),stale:!!x.value&&!x.pending,changed:false,pending:x.pending===true,status:x.pending===true?'待写入':x.value?'历史值':'待读取'})):[]}catch(e){registerRows=[];debug('register load failed',e.message)}renderRegisterRows()}
+function addRegister(reg=$('reg').value) {
+ if (busy || loadedRegisterKey !== registerKey()) return;
+ const row = {id:++rowSeq, reg, width:Number($('regBits').value) || 8, size:1, value:'', stale:false, changed:false, status:'待读取'};
+ registerRows.push(row);
+ saveRegisterRows();
+ if (registerRows.length === 1) $('registerRows').replaceChildren();
+ $('registerRows').append(createRegisterRow(row));
+ debug('register added', {channel, address:$('address').value, reg});
+ return row;
+}
+function parseRegister(row){const address=target(),addrBits=number('addrBits',7,10),reg=readInteger(row.reg,0,row.width===16?65535:255,'寄存器地址'),size=readInteger(row.size,1,512,'读取长度');return {address,addrBits,reg,size}}
+function readInteger(raw,min,max,label){const value=String(raw).trim();if(!/^(?:0x[0-9a-f]+|[0-9]+)$/i.test(value))throw Error(`${label}：请输入整数或 0x 十六进制`);const n=Number(value);if(!Number.isSafeInteger(n)||n<min||n>max)throw Error(`${label}：范围 ${min}–${max}`);return n}
+function rowArgs(row,action){const {address,addrBits,reg,size}=parseRegister(row),c=common(),pointer=reg.toString(16).padStart(row.width/4,'0'),data=String(row.value).replace(/\s/g,'').toLowerCase();if(action==='write'&&(!data||! /^(?:[0-9a-f]{2})+$/i.test(data)||data.length/2>504-row.width/8))throw Error(`写入值需为 1–${504-row.width/8} 字节完整 HEX`);if(addrBits===10)return {name:'si104_i2c_transfer',args:{...c,address,addr_10bit:true,tx_hex:pointer+(action==='write'?data:''),rx_size:action==='read'?size:0},reg};return {name:action==='read'?'si104_i2c_read_regs':'si104_i2c_write_regs',args:{...c,address,reg,reg_addr_16bit:row.width===16,...(action==='read'?{size}:{data_hex:data})},reg}}
+async function operateRow(row, action, background=false) {
+ ensure();
+ if (loadedRegisterKey !== registerKey()) throw Error('请先确认目标设备地址');
+ const {name, args, reg} = rowArgs(row, action);
+ const switchingFromSlave = states[args.channel]?.initialized && states[args.channel].role === 1;
+ if (!background && switchingFromSlave && !confirmRole(0)) return;
+ const key = registerKey(), revision = row.revision;
+ const entry = await call(name, args, action === 'read' ? '寄存器表读取' : '寄存器表写入',
+  `I²C ${channel}`, {reg, regBits:row.width, registerAction:action, quiet:background});
+ if (switchingFromSlave) {
+  const refreshed = await call('si104_device_info', {serial:args.serial, channel:args.channel}, '刷新通道状态',
+   `I²C ${args.channel}`, {quiet:true});
+  states[args.channel] = refreshed.ok ? refreshed.data.i2c?.status || null : null;
+  infoByChannel[args.channel] = refreshed.ok ? refreshed.data : null;
+  renderChannels();
+ }
+ if (key !== registerKey() || !registerRows.includes(row) || row.revision !== revision) return entry;
+ if (entry.ok) {
+  if (action === 'read') {
+   const next = String(entry.data.data_hex ?? entry.data.rx_hex ?? '').toUpperCase();
+   row.changed = Boolean(row.value && row.value !== next);
+   row.value = next;
+  } else row.changed = false;
+  row.stale = false;
+  row.status = action === 'read' ? (row.changed ? '值已变化' : '读取成功') : '写入成功';
+  row.error = false;
+  row.pending = false;
+  saveRegisterRows();
+ } else {
+  row.status = failureText(entry);
+  row.error = true;
+ }
+ updateRegisterRow(row);
+ debug('register operation', {action, channel, address:args.address, reg, ok:entry.ok});
+ return entry;
+}
+
+function stopPolling(message) {
+ const was = polling;
+ polling = false;
+ if (pollTimer !== null) clearTimeout(pollTimer);
+ pollTimer = null;
+ $('pollToggle').textContent = '开始轮询';
+ if (busy) $('pollToggle').setAttribute('aria-disabled', 'true');
+ if (was) {
+  $('registerRows').classList.toggle('polling', false);
+  if (message) {
+   $('operationStatus').className = 'operation-status';
+   $('operationStatus').textContent = message;
+  }
+  debug('poll stop', {message});
+ }
+}
+
+function schedulePoll() {
+ if (polling) pollTimer = setTimeout(pollCycle, Math.max(500, Number($('pollInterval').value) || 500));
+}
+
+async function pollCycle() {
+ if (!polling) return;
+ if (busy || registerKey() !== loadedRegisterKey) { schedulePoll(); return; }
+ const key = registerKey();
+ setBusy(true);
+ try {
+  for (const row of registerRows) {
+   if (!polling || registerKey() !== key) break;
+   const active = document.activeElement;
+   if (row.pending || (row.element?.contains(active) && ['INPUT','SELECT'].includes(active.tagName))) continue;
+   const entry = await operateRow(row, 'read', true);
+   if (!entry.ok) {
+    stopPolling();
+    show(entry, '轮询已暂停：');
+    break;
+   }
+  }
+ } catch (error) {
+  stopPolling();
+  show({label:'输入检查', ok:false, data:{error:error.message}}, '轮询已暂停：');
+  debug('poll error', error.message);
+ } finally {
+  setBusy(false);
+  schedulePoll();
+ }
+}
+
+function renderRegisterRows() {
+ const root = $('registerRows');
+ const address = $('address').value.trim() || '未设置';
+ $('registerContext').textContent = `I²C ${channel} · ${serial() || devices[0]?.serial || '自动设备'} · ${address.replace(/^0x/i,'0x')} / ${$('addrBits').value} bit`;
+ if (registerRows.length) {
+  root.replaceChildren(...registerRows.map(createRegisterRow));
+  return;
+ }
+ const row = document.createElement('tr'), cell = document.createElement('td');
+ cell.colSpan = 4;
+ cell.className = 'register-empty';
+ cell.textContent = '当前目标暂无寄存器行。点击“添加行”开始，或扫描后选择其他目标地址。';
+ row.append(cell);
+ root.replaceChildren(row);
+}
+
+function updateRegisterRow(row) {
+ const value = row.valueInput, light = row.statusLight;
+ if (!value) return;
+ if (value.value !== row.value && document.activeElement !== value) value.value = row.value;
+ value.classList.toggle('changed', row.changed);
+ value.classList.toggle('stale', row.stale);
+ light.className = 'status-light' + (row.error ? ' bad' : ['读取成功','写入成功','值已变化'].includes(row.status) ? ' good' : '');
+ light.title = row.status;
+ light.setAttribute('aria-label', row.status);
+ row.failureLabel.classList.toggle('hidden', !row.error);
+}
+
+function createRegisterRow(row) {
+ const tr = document.createElement('tr'), regCell = document.createElement('td');
+ const reg = document.createElement('input'), width = document.createElement('select'), size = document.createElement('input');
+ const saveEdit = (field, value) => {
+  row[field] = value;
+  row.revision = (row.revision || 0) + 1;
+  row.changed = false;
+  row.stale = false;
+  row.error = false;
+  if (field === 'value') row.pending = Boolean(value.trim());
+  row.status = row.pending ? '待写入' : '待读取';
+  saveRegisterRows();
+  updateRegisterRow(row);
+ };
+ reg.value = row.reg;
+ reg.className = 'mono';
+ reg.setAttribute('aria-label','寄存器地址');
+ reg.oninput = () => saveEdit('reg', reg.value);
+ for (const bits of [8,16]) width.add(new Option(`${bits} bit`, String(bits)));
+ width.value = String(row.width);
+ width.setAttribute('aria-label','指针位宽');
+ width.onchange = () => saveEdit('width', Number(width.value));
+ size.type = 'number';
+ size.className = 'size';
+ size.min = 1;
+ size.max = 512;
+ size.value = row.size;
+ size.setAttribute('aria-label','读取字节数');
+ size.oninput = () => saveEdit('size', Number(size.value));
+ regCell.append(reg, width, size);
+ const valueCell = document.createElement('td'), value = document.createElement('input');
+ value.className = 'value mono';
+ value.setAttribute('aria-label','寄存器值 HEX');
+ value.oninput = () => saveEdit('value', value.value);
+ value.onblur = () => updateRegisterRow(row);
+ valueCell.append(value);
+ const status = document.createElement('td'), light = document.createElement('span'), failureLabel = document.createElement('small');
+ status.className = 'status-cell';
+ failureLabel.textContent = '失败';
+ status.append(light, failureLabel);
+ Object.assign(row, {element:tr, valueInput:value, statusLight:light, failureLabel});
+ updateRegisterRow(row);
+ const actions = document.createElement('td');
+ actions.className = 'actions';
+ const remove = () => {
+  if (busy || !confirm(`删除寄存器 ${row.reg.replace(/^0x/i,'0x')} 的记录？`)) return;
+  registerRows = registerRows.filter(item => item !== row);
+  row.element.remove();
+  saveRegisterRows();
+  if (!registerRows.length) {
+   stopPolling();
+   renderRegisterRows();
+  }
+  debug('register removed', {channel, reg:row.reg});
+ };
+ for (const [label, handler] of [['读', () => run(() => operateRow(row, 'read'))], ['写', () => run(() => operateRow(row, 'write'))], ['删除', remove]]) {
+  const button = document.createElement('button');
+  button.textContent = label;
+  button.dataset.bus = '';
+  button.onclick = handler;
+  actions.append(button);
+ }
+ tr.append(regCell, valueCell, status, actions);
+ return tr;
+}
+async function controlVcc(enable, ch=channel, device=serial()) {
+ ensure();
+ const action = enable ? '使能' : '关断';
+ if (!confirm(`${action}设备 ${device || '自动选择'} 的共享 VCC 将影响四个 I²C 通道（通过 I²C ${ch} 操作）。确认接线和供电兼容后继续？`)) return;
+ const result = await call('si104_vcc_control', {serial:device,channel:ch,enable,persist:false}, `${action}共享 VCC`, '设备');
+ if (device !== serial()) return;
+ if (typeof result.data.output_enabled === 'boolean') renderVcc(result.data);
+ else if (result.data.completion_unknown) renderVcc({});
+ debug('VCC control verification', {channel:ch, requested:enable, actual:result.data.output_enabled, ok:result.ok});
+}
+async function boot(){return run(async()=>{connected=false;$('connection').textContent='正在连接服务';$('lamp').className='dot';try{await rpc('initialize',{protocolVersion:'2025-06-18',capabilities:{},clientInfo:{name:'si104-workbench',version:'1.0'}});await rpc('notifications/initialized',{},true);const list=await rpc('tools/list',{});const need=['si104_enumerate','si104_device_info','si104_i2c_scan','si104_i2c_transfer','si104_i2c_read_regs','si104_i2c_write_regs','si104_i2c_slave','si104_spi_transfer','si104_spi_control','si104_read_vcc','si104_vcc_control'];const missing=need.filter(n=>!list.tools.some(t=>t.name===n));if(missing.length)throw Error('缺少工具：'+missing.join(', '));connected=true;$('connection').textContent='服务已连接';$('lamp').className='dot ok';await refreshDevices();await readChannels()}catch(e){$('connection').textContent='连接失败，检查服务或访问令牌';$('lamp').className='dot bad';debug('connection failed',e.message)}})}
+function ensure(){if(!connected)throw Error('请先连接 MCP 服务')}
+function confirmRole(role){const s=states[channel];if(!s||s.error||!s.initialized||s.role!==role)return confirm(`此操作会将 I²C ${channel} 配置为${role===1?'从机':'主机'}，可能覆盖已有配置。继续？`);return true}
+function target(){return number('address',0,number('addrBits',7,10)===10?1023:127)}
+async function master(kind){
+ ensure();const c=common(),bits=number('addrBits',7,10),address=kind==='scan'?0:target();if(!confirmRole(0))return;let name,args,label,meta={};
+ if(kind==='scan'){if(!confirm(`扫描会将 I²C ${channel} 配置为主机，并对地址 0x08–0x77 执行读取。继续？`))return;name='si104_i2c_scan';args=c;label='扫描总线'}
+ else if(kind==='raw'){name='si104_i2c_transfer';args={...c,address,addr_10bit:bits===10,tx_hex:hex('rawTx',504),rx_size:number('rawRx',0,512)};if(!args.tx_hex&&!args.rx_size)throw Error('发送数据和接收长度不能同时为空');label='原始传输'}
+ else{const rb=number('regBits',8,16),reg=number('reg',0,rb===16?65535:255),size=kind==='read'?number('regSize',1,512):0,data=kind==='write'?hex('regData',504-(rb/8),true):'';meta={reg,regBits:rb,registerAction:kind};label=kind==='read'?'读取寄存器':'写入寄存器';if(bits===10){const ptr=reg.toString(16).padStart(rb/4,'0');name='si104_i2c_transfer';args={...c,address,addr_10bit:true,tx_hex:ptr+data,rx_size:size}}else{name=kind==='read'?'si104_i2c_read_regs':'si104_i2c_write_regs';args={...c,address,reg,reg_addr_16bit:rb===16,...(kind==='read'?{size}:{data_hex:data})}}
+ }
+ if(kind!=='scan'){states[channel]=null;renderChannels()}const result=await call(name,args,label,`I²C ${channel}`,meta);
+ if(kind==='scan'){
+  const found=result.data.found??result.data.found_before_abort??[];const state=await call('si104_device_info',{serial:c.serial,channel:c.channel},`刷新通道 ${c.channel} 状态`,`I²C ${c.channel}`,{quiet:true});
+  if(state.ok){states[c.channel]=state.data.i2c?.status||null;infoByChannel[c.channel]=state.data;renderChannels()}
+  
+  debug('scan complete',{channel,found:found.length,refreshed:state.ok})
+ }
+}
+async function slave(action){ensure();const c=common(),slave_addr=readInteger($('slaveAddress').value,0,127,'从机地址'),slave_mode=number('slaveMode',0,2),mailbox=slave_mode===1,toolAction=mailbox?(action==='read'?'pop':'push'):action;if(!confirmRole(1))return;if(slave_mode===0){const info=await call('si104_device_info',{serial:serial(),channel},'检查从机模式',undefined,{quiet:true});const s=info.data.i2c?.status;if(!info.ok||!s||s.initialized==null)throw Error('无法读取通道实际配置，不能确认原始模式');if(s.initialized&&s.role===1&&s.slave_logic_mode>0)throw Error('当前服务可能错误复用已有非原始模式，请先在其他工具复位通道')}states[channel]=null;renderChannels();const label=mailbox?(action==='read'?'弹出邮箱消息':'放入邮箱消息'):(action==='read'?'读取从机接收数据':'设置从机响应数据');await call('si104_i2c_slave',{...c,slave_addr,slave_mode,action:toolAction,...(action==='read'?{size:number('slaveSize',1,512)}:{data_hex:hex('slaveData',256,true)})},label);const state=await call('si104_device_info',{serial:serial(),channel},`刷新从机 ${channel} 状态`,`I²C ${channel}`,{quiet:true});if(state.ok){states[channel]=state.data.i2c?.status||null;infoByChannel[channel]=state.data;renderChannels()}}
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>toggleTab(b.dataset.tab));$('connect').onclick=boot;$('refresh').onclick=()=>run(async()=>{ensure();await refreshDevices();await readChannels()});$('device').onchange=()=>{stopPolling('切换设备，轮询已停止');states.fill(null);infoByChannel.fill(null);renderVcc({});renderDeviceInfo(null,channel);renderChannels();loadRegisterRows();run(async()=>{ensure();await readChannels()})};$('address').onchange=()=>loadRegisterRows();$('addrBits').onchange=()=>loadRegisterRows();$('refreshChannels').onclick=()=>run(async()=>{ensure();await readChannels()});$('vccRead').onclick=()=>run(async()=>{ensure();const r=await call('si104_read_vcc',{serial:serial(),channel},'读取共享 VCC','设备');if(r.ok)renderVcc(r.data)});$('vccToggle').onclick=()=>run(async()=>{ensure();await controlVcc($('vcc').dataset.enabled!=='true')});
+for(const [id,kind] of [['scan','scan'],['regRead','read'],['regWrite','write'],['rawRun','raw']])$(id).onclick=()=>run(()=>master(kind));$('slaveMode').onchange=renderSlaveMode;$('slaveRead').onclick=()=>run(()=>slave('read'));$('slaveWrite').onclick=()=>run(()=>slave('write'));
+$('spiPreset').onchange=()=>{if($('spiPreset').value!=='custom')$('spiHz').value=$('spiPreset').value};$('spiHz').oninput=()=>{$('spiPreset').value=[...$('spiPreset').options].some(o=>o.value===$('spiHz').value)?$('spiHz').value:'custom'};
+for(const id of ['regData','rawTx','slaveData','spiTx']){const el=$(id),msg=document.createElement('span');msg.className='field-error';msg.setAttribute('role','status');el.insertAdjacentElement('afterend',msg);el.addEventListener('input',()=>{const max=id==='regData'?504-Number($('regBits').value)/8:id==='slaveData'?256:504;try{hex(id,max);msg.textContent='';el.removeAttribute('aria-invalid')}catch(e){msg.textContent=e.message;el.setAttribute('aria-invalid','true')}})}
+$('regBits').onchange=()=>$('regData').dispatchEvent(new Event('input'));
+$('reg').addEventListener('input',()=>{const el=$('reg'),msg=$('regError');try{readInteger(el.value,0,$('regBits').value==='16'?65535:255,'寄存器地址');msg.textContent='';el.removeAttribute('aria-invalid')}catch(e){msg.textContent=e.message;el.setAttribute('aria-invalid','true')}});const regError=document.createElement('span');regError.id='regError';regError.className='field-error';regError.setAttribute('role','status');$('reg').insertAdjacentElement('afterend',regError);$('regBits').addEventListener('change',()=>$('reg').dispatchEvent(new Event('input')));
+$('addRegister').onclick=()=>addRegister();$('pollToggle').onclick=()=>{if(polling){stopPolling('轮询已停止');return}try{ensure();if(!registerRows.length)throw Error('请先添加寄存器行');readInteger($('pollInterval').value,500,60000,'轮询间隔');if(busy || (states[channel]?.initialized && states[channel].role===1 && !confirmRole(0)))return;polling=true;$('registerRows').classList.add('polling');$('pollToggle').textContent='停止轮询';debug('poll start',{channel,rows:registerRows.length});pollCycle()}catch(e){$('operationStatus').textContent=e.message}};
+$('spiRun').onclick=()=>run(async()=>{ensure();const m=number('spiMode',0,3),tx_hex=hex('spiTx',504),rx_size=number('spiRx',0,512);if(!tx_hex&&!rx_size)throw Error('发送数据和接收长度不能同时为空');await call('si104_spi_transfer',{serial:serial(),tx_hex,rx_size,sclk_hz:number('spiHz',50000,40000000),cpol:m>>1,cpha:m&1,lsb_first:$('spiOrder').value==='1'},'SPI 传输','SPI')});$('spiStatus').onclick=()=>run(async()=>{ensure();await call('si104_spi_control',{serial:serial(),action:'tx_status'},'SPI 状态','SPI')});$('spiAbort').onclick=()=>run(async()=>{ensure();if(confirm('中止 SPI 在途操作？已发生的总线操作无法撤销。'))await call('si104_spi_control',{serial:serial(),action:'abort'},'SPI 中止','SPI')});$('clear').onclick=()=>{$('history').replaceChildren()};for (const id of ['refresh','connect','refreshChannels','vccRead','vccToggle','scan','regRead','regWrite','rawRun','slaveRead','slaveWrite','spiRun','spiStatus','spiAbort','pollToggle']) $(id).dataset.bus = '';
+document.querySelectorAll('[data-tab]').forEach(button => { button.dataset.bus = ''; });
+$('deviceInfo').parentElement.addEventListener('toggle', event => {
+ if (event.currentTarget.open) renderDeviceInfo(infoByChannel[channel], channel);
+});
+renderChannels();renderVcc({});loadRegisterRows();boot();
+</script></body></html>

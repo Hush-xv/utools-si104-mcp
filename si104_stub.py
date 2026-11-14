@@ -244,9 +244,13 @@ class Device:
 
     # -------------------------------------------------------------------- I2C
     def i2c_configure(self, channel, config):
+        LOG.debug(
+            "i2c_configure channel=%d role=%d addr=0x%X mode=%d",
+            channel, config.role, config.slave_addr, config.slave_mode,
+        )
         _BUS.i2c_channels[channel] = config
         if config.role == 1:
-            _BUS.slaves.setdefault(
+            slave = _BUS.slaves.setdefault(
                 config.slave_addr,
                 {
                     "mode": config.slave_mode,
@@ -260,7 +264,11 @@ class Device:
                     "mailbox_tx": bytearray(),  # mailbox outgoing (0x16 PUSH)
                 },
             )
-            _BUS.slaves[config.slave_addr]["initialized"] = True
+            slave.update(
+                mode=config.slave_mode,
+                reg_addr_16bit=config.reg_addr_16bit,
+                initialized=True,
+            )
 
     def _fail(self, interface, msg, code, firmware_status=0):
         _BUS.err_counts[interface] += 1

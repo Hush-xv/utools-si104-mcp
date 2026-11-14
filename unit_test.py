@@ -12,6 +12,7 @@ Run: python unit_test.py   (exit 1 on any failure)
 import json
 import struct
 import sys
+from unittest.mock import patch
 
 import si104_stub
 
@@ -134,6 +135,19 @@ expect_value_error("spi rx 513B",
                    lambda: tool("si104_spi_transfer")(rx_size=513), "rx_size")
 expect_value_error("spi 16-bit odd tx",
                    lambda: tool("si104_spi_transfer")(tx_hex="000000", data_bits=16), "multiple")
+for bits, word_bytes in ((9, 2), (17, 3), (25, 4), (31, 4)):
+    expect_value_error(
+        f"spi {bits}-bit partial word",
+        lambda n=word_bytes, b=bits: tool("si104_spi_transfer")(
+            tx_hex="00" * (n - 1), rx_size=0, data_bits=b
+        ),
+        f"multiples of {word_bytes}",
+    )
+    d = tool("si104_spi_transfer")(
+        tx_hex="00" * word_bytes, rx_size=word_bytes, data_bits=bits
+    )
+    check(f"spi {bits}-bit complete word accepted",
+          d.get("rx_hex") == "00" * word_bytes, str(d)[:90])
 expect_value_error("tx_words data_bits=12",
                    lambda: tool("si104_spi_tx_words")(tx_hex="00", data_bits=12), "8/16/32")
 expect_value_error("F3 tx_words cpha=3",
@@ -167,15 +181,31 @@ check("NO_POWER before enable", d.get("firmware_status") == 11
 
 d = tool("si104_i2c_scan")(channel=0)
 check("scan aborts on NO_POWER", d.get("firmware_status") == 11
-      and d.get("found_before_abort") == [], str(d)[:90])
+      and d.get("found_before_abort") == []
+      and d.get("aborted_at") == "0x08", str(d)[:90])
 
-d = tool("si104_vcc_control")(channel=0, enable=True)
-check("vcc_control enables rail", d.get("output_enabled") is True
-      and d.get("requested_enable") is True, str(d)[:90])
+vcc_control_reply = tool("si104_vcc_control")(channel=0, enable=True)
+check("vcc_control enables rail", vcc_control_reply.get("output_enabled") is True
+      and vcc_control_reply.get("requested_enable") is True, str(vcc_control_reply)[:90])
 
 d = tool("si104_read_vcc")(channel=0)
 check("read_vcc after enable", d.get("output_enabled") is True
       and d.get("threshold_mv") == 3000, str(d)[:90])
+raw = tool("si104_raw_request")(interface=0, command=0x1F)
+check("VCC read and control return actual reply bytes",
+      d.get("raw_hex") == raw["reply_hex"] == vcc_control_reply.get("raw_hex"))
+
+with patch.object(si104_stub.Device, "request", side_effect=[b"", bytes.fromhex("0000b80b000000000000")]) as request:
+    d = tool("si104_vcc_control")(channel=0, enable=True)
+    check("VCC control rejects opposite state with readback preserved",
+          d.get("error") and d.get("output_enabled") is False
+          and d.get("raw_hex") == "0000b80b000000000000" and request.call_count == 2)
+
+with patch.object(si104_stub.Device, "request", side_effect=[b"", b"\x01"]) as request:
+    d = tool("si104_vcc_control")(channel=0, enable=True)
+    check("VCC verification failure is uncertain and does not repeat the command",
+          d.get("completion_unknown") is True and d.get("code") == -6
+          and d.get("raw_hex") == "01" and request.call_count == 2)
 
 d = tool("si104_raw_request")(interface=4, command=0x1F)
 check("raw 0x1F on SPI face rejected", "error" in d and d.get("firmware_status") == 4,
@@ -205,6 +235,24 @@ d = tool("si104_i2c_transfer")(channel=0, address=0x45, tx_hex="30", rx_size=2,
                                monitor_vcc=True)
 check("monitor_vcc dict", d.get("vcc", {}).get("adc_valid") is True
       and d.get("vcc", {}).get("output_enabled") is True, str(d)[:90])
+
+d = tool("si104_i2c_slave")(channel=1, action="write", slave_addr=0x45,
+                            slave_mode=0, data_hex="A1")
+raw_status = tool("si104_device_info")(channel=1).get("i2c", {}).get("status", {})
+check("register slave switches to raw mode", d.get("written_bytes") == 1
+      and raw_status.get("slave_logic_mode") == 0, str(raw_status)[:90])
+tool("si104_i2c_transfer")(channel=0, address=0x45, tx_hex="D00D", rx_size=0)
+d = tool("si104_i2c_slave")(channel=1, action="read", slave_addr=0x45,
+                            slave_mode=0, size=2)
+check("raw buffer read after register-to-raw switch", d.get("data_hex") == "d00d", str(d)[:90])
+
+d = tool("si104_i2c_slave")(channel=1, action="write", slave_addr=0x45,
+                            slave_mode=2, data_hex="00")
+reg_status = tool("si104_device_info")(channel=1).get("i2c", {}).get("status", {})
+check("raw slave switches back to register mode", d.get("written_bytes") == 1
+      and reg_status.get("slave_logic_mode") == 2, str(reg_status)[:90])
+d = tool("si104_i2c_read_regs")(channel=0, address=0x45, reg=0x10, size=4)
+check("register mirror remains accessible after mode switch", d.get("data_hex") == "deadbeef", str(d))
 
 d = tool("si104_i2c_slave")(channel=2, action="push", slave_addr=0x50,
                             slave_mode=1, data_hex="AABB")

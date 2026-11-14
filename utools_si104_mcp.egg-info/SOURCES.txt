@@ -3,6 +3,8 @@ README.md
 pyproject.toml
 server.py
 si104_stub.py
+si104_console/__init__.py
+si104_console/console.html
 utools_si104_mcp.egg-info/PKG-INFO
 utools_si104_mcp.egg-info/SOURCES.txt
 utools_si104_mcp.egg-info/dependency_links.txt

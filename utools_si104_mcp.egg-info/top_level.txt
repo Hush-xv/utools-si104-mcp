@@ -1,2 +1,3 @@
 server
+si104_console
 si104_stub
