@@ -6,6 +6,7 @@
   register; spi_tx_words shares that path)
 - long-TX commit + tx_status with the wire attached
 """
+import os
 import asyncio
 import json
 import sys
@@ -18,7 +19,8 @@ SERVER = Path(__file__).with_name("server.py")
 
 
 async def main() -> int:
-    params = StdioServerParameters(command=sys.executable, args=[str(SERVER)])
+    params = StdioServerParameters(command=sys.executable, args=[str(SERVER)],
+                                   env={**os.environ})
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()

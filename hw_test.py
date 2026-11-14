@@ -6,6 +6,7 @@ api-level smoke (no wires attached).
 """
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,11 @@ SERVER = Path(__file__).with_name("server.py")
 
 
 async def main() -> int:
-    params = StdioServerParameters(command=sys.executable, args=[str(SERVER)])
+    # Pass the full environment: vendored-SDK users locate the binding/native
+    # lib via PYTHONPATH / SI104_SDK_LIBRARY / SI104_LIBUSB, which the default
+    # filtered child environment would drop.
+    params = StdioServerParameters(command=sys.executable, args=[str(SERVER)],
+                                   env={**os.environ})
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
