@@ -57,6 +57,25 @@ async def main() -> int:
                 {"tx_hex": "00010203", "data_bits": 8, "sclk_hz": 1_000_000},
             ))
 
+            print("== i2c_control abort ch0 ==")
+            print(await call("si104_i2c_control", {"channel": 0, "action": "abort"}))
+
+            print("== i2c_control reset ch3 (spare channel) ==")
+            print(await call("si104_i2c_control", {"channel": 3, "action": "reset"}))
+
+            print("== slave mailbox push ch1@0x45 (reconfigures ch1 to mailbox mode) ==")
+            print(await call("si104_i2c_slave", {
+                "channel": 1, "action": "push", "slave_addr": 0x45,
+                "slave_mode": 1, "data_hex": "A5A5"}))
+
+            print("== slave mailbox pop ch1@0x45 ==")
+            print(await call("si104_i2c_slave", {
+                "channel": 1, "action": "pop", "slave_addr": 0x45,
+                "slave_mode": 1, "size": 4}))
+
+            print("== device_info vcc section ==")
+            print(await call("si104_device_info", {"channel": 0}))
+
     print("HW RUN DONE")
     return 0
 

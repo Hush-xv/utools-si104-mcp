@@ -1,15 +1,15 @@
 # utools-si104-mcp
 
-把 UTools-SI104（USB 转 SPI/I2C 适配器，Lanmotion）SDK 封装成 MCP 服务器，让 ZCode / Claude Code / Codex / DeepSeek 等 AI 客户端直接驱动硬件：设备枚举、SPI 全双工收发与长发送、I2C 主机事务与寄存器读写、总线扫描、从机缓冲、VCC 供电诊断与控制——**13 个工具覆盖 SDK 全部 API**。
+把 UTools-SI104（USB 转 SPI/I2C 适配器，Lanmotion）SDK 封装成 MCP 服务器，让 ZCode / Claude Code / Codex / DeepSeek 等 AI 客户端直接驱动硬件：设备枚举、SPI 全双工收发与长发送、I2C 主机事务与寄存器读写、总线扫描、从机缓冲与邮箱 FIFO、通道恢复、VCC 供电诊断与控制——**14 个工具覆盖 SDK 全部 API**。
 
 协议日志走 stderr，stdout 专用于 MCP 协议。
 
 ## 特性
 
-- **stdio 无状态**：每次工具调用原子化 `open → 操作 → close`，只在调用期间占用 dongle（毫秒级），与 uTools 主程序共存，无需常驻进程。同一时间只服务一个客户端，并发会撞 USB 互斥（后到者报 `SI104 not found`，重试即可）
-- **全 API 覆盖**：13 个工具，含 `si104_raw_request` 万能透传兜底（固件私有命令）与 `si104_vcc_control` 专用供电控制
+- **stdio 无状态**：每次工具调用原子化 `open → 操作 → close`，只在调用期间占用 dongle（毫秒级），与 uTools 主程序共存，无需常驻进程。同一时间只服务一个客户端，并发会撞 USB 互斥（瞬时 `-2/-3` 服务端已内置 ≤2 次 100ms 自动重试，仅重试 open、绝不重试总线操作；极端并发仍可能报错，重试即可）
+- **全 API 覆盖**：14 个工具，含 `si104_raw_request` 万能透传兜底（固件私有命令）、`si104_vcc_control` 供电控制与 `si104_i2c_control` 通道恢复
+- **结构化错误**：`{error, code, code_meaning, backend_code, firmware_status, completion_unknown}`；`code_meaning` 按 SDK Guide §08 官方错误码表给出静态含义，**`completion_unknown=true` 时总线操作可能已发生，禁止盲目重发**（附 `retry_hint`）
 - **文档对齐**：容量上限（i2c TX≤504、寄存器读≤512 但自增按 256 页翻页、寄存器写≤504 含指针字节、raw request 请求/回复各≤512、SPI TX≤504、长发送 ≤1024 word）、速率预设（mode 0/1/2 = 100k/400k/1M，`bus_hz` 仅 mode=3 生效）、状态解码（SPI_TX_STATUS BB5HI、I2C GET_STATUS 32 B）均按官方《SDK Guide》/《Technical Manual》实现（容量与错误码已对照 SDK 1.0.5 官方文档复核）
-- **结构化错误**：`{error, code, backend_code, firmware_status, completion_unknown}`；**`completion_unknown=true` 时总线操作可能已发生，禁止盲目重发**（附 `retry_hint`）
 - **可诊断**：每调用关联 ID（`#N`）+ `[param]/[device]/[internal]` 分级日志；负载只记长度不记内容
 
 ## 前置条件
@@ -37,7 +37,7 @@ python -m venv .venv
 
 Linux 同理（`.venv/bin/python`；Linux 还需系统 libusb）。
 
-## 13 个工具
+## 14 个工具
 
 | 工具 | 用途 |
 |---|---|
@@ -49,8 +49,9 @@ Linux 同理（`.venv/bin/python`；Linux 还需系统 libusb）。
 | `si104_i2c_transfer` | 原子 I2C 主机事务（写后读重复 START）；`monitor_vcc=true` 附 vcc 字段 |
 | `si104_i2c_read_regs` | 主机寄存器读：指针相位 + 重复 START（实测验证）；`reg_addr_16bit=true` 时 reg 0..65535，指针 2 字节 MSB-first |
 | `si104_i2c_write_regs` | 主机寄存器写：指针 + 数据一条事务；16-bit 寄存器地址实测可用 |
-| `si104_i2c_scan` | 7-bit 总线扫描；设备级错误（code -2/-3/-5/-9/-11）中断并返回 `found_before_abort` |
-| `si104_i2c_slave` | 从机缓冲读/写（raw/mailbox/register）；固件在供电期间保持通道配置，工具复用匹配配置不覆盖 |
+| `si104_i2c_scan` | 7-bit 总线扫描；设备级错误（未找到/忙/断开等非 NACK 签名）中断并返回 `found_before_abort` |
+| `si104_i2c_control` | I2C 通道恢复：abort 取消在途事务（0x14）/ reset 复位通道并清配置（0x15），复位后需重配 |
+| `si104_i2c_slave` | 从机缓冲读/写（raw 缓冲）+ 邮箱 FIFO push/pop（自动切 mailbox 逻辑模式，push≤256 B/pop≤512 B）；固件在供电期间保持通道配置，工具复用匹配配置不覆盖 |
 | `si104_raw_request` | vendor request 透传（EVENT_POLL=0x1B 等无专属工具的命令） |
 | `si104_read_vcc` | VCC 供电状态（`0x1F` 空查询，免总线流量） |
 | `si104_vcc_control` | 使能/关断共享 VCC 输出（`0x1E`，NO_POWER 恢复专用），回读 `0x1F` 确认设备侧状态 |
@@ -115,7 +116,7 @@ App 的 MCP 设置选自定义（stdio）：命令 = `<venv>\Scripts\python.exe`
 .venv\Scripts\python smoke_test.py
 ```
 
-`unit_test.py` 覆盖参数校验、二进制解码器和工具全流程（基于测试替身，无需硬件）；`smoke_test.py` 期望输出 `SMOKE OK`：13 工具注册 + 无 dongle 时结构化错误路径。插上 dongle 后建议按顺序跑一遍实机验证：`device_info`（对照 limits）→ `i2c_scan` → SPI 回环（MOSI-MISO 短接，8/16/32 bit × CS 极性矩阵）→ `read_vcc` 与 `raw_request(0x1F)` 互证。
+`unit_test.py` 覆盖参数校验、二进制解码器和工具全流程（基于测试替身，无需硬件）；`smoke_test.py` 期望输出 `SMOKE OK`：14 工具注册 + 无 dongle 时结构化错误路径。插上 dongle 后建议按顺序跑一遍实机验证：`device_info`（对照 limits）→ `i2c_scan` → SPI 回环（MOSI-MISO 短接，8/16/32 bit × CS 极性矩阵）→ `read_vcc` 与 `raw_request(0x1F)` 互证 → `i2c_control` 与 mailbox push/pop（`hw_test.py` 末尾已含）。
 
 ## 无硬件自测与 CI
 
@@ -136,6 +137,26 @@ CI（`.github/workflows/ci.yml`）：ruff + `unit_test.py` + `smoke_test.py`，�
 - `si104_device_info` 的 status 解码按 TM §8 32 B 格式；interface=4 之外的接口号映射文档未明确，格式不符降级返回 raw_hex
 - 参数入口校验前移：channel 0-3、mode 0-3、7/10-bit 地址域、timeout_ms u16（0=固件默认 1000）、custom 模式 bus_hz 10k-1M、sclk_hz 正数、cpol/cpha ∈ {0,1}（SDK Guide §06）
 - `si104_raw_request` 请求与回复各 ≤512 B（SDK Guide §07）；508 是 SI104 自身寄存器镜像写（`i2c_reg_write`）的限制，两者勿混淆。绑定中的 `i2c_mailbox_push/pop`、`i2c_reg_read/write/reply`（固件 1.3 上已实测失效）、`i2c_abort/reset`、`ping` 未设专属工具，经 raw_request 兜底
+
+## 官方错误码（SDK Guide §08）
+
+结构化错误里的 `code` 遵循 SDK 统一错误码，`code_meaning` 字段即下表含义：
+
+| code | 含义 |
+|---|---|
+| -1 | 参数错误 |
+| -2 | 未找到设备 |
+| -3 | 接口或设备忙 |
+| -4 | 超时 |
+| -5 | USB 断开 |
+| -6 | 回复格式错误 |
+| -7 | 不支持 |
+| -8 | USB 或其他 IO 错误 |
+| -9 | 缓冲不足 |
+| -10 | 设备拒绝（`firmware_status` 给出固件侧原因，如 7=NACK、8=超时、11=NO_POWER） |
+| -11 | 多设备需指定序列号 |
+
+`completion_unknown=true` 表示总线操作可能已经发生：先核对从机状态，禁止盲目重发（SDK Guide §08）。
 
 ## 许可
 

@@ -99,6 +99,18 @@ expect_value_error("slave read size 0",
                    lambda: tool("si104_i2c_slave")(action="read", size=0), "size")
 expect_value_error("F3 spi cpol=2",
                    lambda: tool("si104_spi_transfer")(cpol=2), "cpol")
+expect_value_error("spi sclk below 50k",
+                   lambda: tool("si104_spi_transfer")(sclk_hz=49_999), "sclk_hz")
+expect_value_error("spi sclk above 40M",
+                   lambda: tool("si104_spi_transfer")(sclk_hz=40_000_001), "sclk_hz")
+expect_value_error("spi timeout 0",
+                   lambda: tool("si104_spi_transfer")(timeout_ms=0), "timeout_ms")
+expect_value_error("spi timeout 60001",
+                   lambda: tool("si104_spi_transfer")(timeout_ms=60_001), "timeout_ms")
+expect_value_error("spi data_bits 0",
+                   lambda: tool("si104_spi_transfer")(data_bits=0), "data_bits")
+expect_value_error("spi data_bits 33",
+                   lambda: tool("si104_spi_transfer")(data_bits=33), "data_bits")
 expect_value_error("spi tx 505B",
                    lambda: tool("si104_spi_transfer")(tx_hex="00" * 505), "504")
 expect_value_error("spi rx 513B",
@@ -117,6 +129,12 @@ expect_value_error("raw payload 513B (cap 512, SDK Guide s7)",
                    lambda: tool("si104_raw_request")(payload_hex="00" * 513), "512")
 expect_value_error("vcc_control channel",
                    lambda: tool("si104_vcc_control")(channel=4), "channel")
+expect_value_error("i2c_control bad action",
+                   lambda: tool("si104_i2c_control")(action="frobnicate"), "abort")
+expect_value_error("i2c_control bad channel",
+                   lambda: tool("si104_i2c_control")(channel=4), "channel")
+expect_value_error("mailbox push 257B",
+                   lambda: tool("si104_i2c_slave")(action="push", data_hex="00" * 257), "256")
 expect_value_error("device_info channel",
                    lambda: tool("si104_device_info")(channel=4), "channel")
 
@@ -127,6 +145,7 @@ check("enumerate finds stub", d["count"] == 1
 
 d = tool("si104_i2c_transfer")(channel=0, address=0x45, rx_size=1)
 check("NO_POWER before enable", d.get("firmware_status") == 11
+      and d.get("code_meaning") == "device rejected the request"
       and "si104_vcc_control" in d.get("hint", ""), str(d)[:90])
 
 d = tool("si104_i2c_scan")(channel=0)
@@ -170,12 +189,17 @@ d = tool("si104_i2c_transfer")(channel=0, address=0x45, tx_hex="30", rx_size=2,
 check("monitor_vcc dict", d.get("vcc", {}).get("adc_valid") is True
       and d.get("vcc", {}).get("output_enabled") is True, str(d)[:90])
 
-d = tool("si104_i2c_slave")(channel=2, action="write", slave_addr=0x50,
+d = tool("si104_i2c_slave")(channel=2, action="push", slave_addr=0x50,
                             slave_mode=1, data_hex="AABB")
+check("mailbox push", d.get("action") == "push" and d.get("pushed_bytes") == 2, str(d)[:90])
+
 tool("si104_i2c_transfer")(channel=0, address=0x50, tx_hex="010203", rx_size=0)
-d = tool("si104_i2c_slave")(channel=2, action="read", slave_addr=0x50,
+d = tool("si104_i2c_slave")(channel=2, action="pop", slave_addr=0x50,
                             slave_mode=1, size=2)
-check("mailbox: first write byte is pointer", d.get("data_hex") == "0203", str(d))
+check("mailbox pop: first write byte is pointer", d.get("data_hex") == "0203", str(d))
+
+d = tool("si104_i2c_transfer")(channel=0, address=0x50, tx_hex="", rx_size=2)
+check("master reads pushed mailbox", d.get("rx_hex") == "aabb", str(d))
 
 d = tool("si104_spi_transfer")(tx_hex="01020304", rx_size=6)
 check("spi loopback echo + zero tail", d.get("rx_hex") == "010203040000", str(d))
@@ -202,8 +226,26 @@ check("device_info per-face", "spi" in d and "i2c" in d
       and st.get("role") == 1 and st.get("slave_addr") == 0x45
       and st.get("initialized") is True, str(st)[:90])
 
+d = tool("si104_device_info")()
+check("device_info vcc rail", d.get("vcc", {}).get("output_enabled") is True
+      and d.get("vcc", {}).get("channel") == 0, str(d.get("vcc"))[:90])
+
+d = tool("si104_i2c_control")(channel=0, action="abort")
+check("i2c_control abort", d.get("action") == "abort" and d.get("channel") == 0, str(d))
+
+tool("si104_i2c_slave")(channel=3, action="write", slave_addr=0x55,
+                        slave_mode=0, data_hex="AA")
+st = tool("si104_device_info")(channel=3).get("i2c", {}).get("status", {})
+check("slave ch3 configured", st.get("role") == 1 and st.get("initialized") is True,
+      str(st)[:80])
+tool("si104_i2c_control")(channel=3, action="reset")
+st = tool("si104_device_info")(channel=3).get("i2c", {}).get("status", {})
+check("i2c reset clears channel config", st.get("role") == 0
+      and st.get("initialized") is False, str(st)[:80])
+
 d = tool("si104_read_vcc")(serial="NOPE")
 check("unknown serial -> structured error", "error" in d
+      and d.get("code_meaning") == "device not found"
       and "not found" in d["error"], str(d)[:90])
 
 fails = [n for n, ok in RESULTS if not ok]

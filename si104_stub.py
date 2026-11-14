@@ -165,8 +165,8 @@ class Device:
             slave["mode"] if slave else 0,
             2 if (slave and slave.get("reg_addr_16bit")) else 1,
             slave.get("reg_ptr", 0) if slave else 0,
-            len(slave.get("rx_buf", b"")) if slave else 0,
-            len(slave.get("tx_buf", b"")) if slave else 0,
+            len(slave.get("mailbox_rx", b"")) if slave else 0,
+            len(slave.get("mailbox_tx", b"")) if slave else 0,
             0,  # event_pending
             0,  # event_dropped
         )
@@ -221,7 +221,7 @@ class Device:
 
     def spi_transfer(self, tx, rx_size):
         if _BUS.spi_config is None:
-            raise Error("SPI not configured", code=-2)
+            raise Error("SPI not configured", code=-7)
         _BUS.req_counts[4] += 1
         # D0<->D1 loopback semantics (stress B6): rx head echoes tx, tail is 0.
         return (bytes(tx) + b"\x00" * rx_size)[:rx_size]
@@ -254,8 +254,10 @@ class Device:
                     "mirror": bytearray(4096),
                     "reg_ptr": 0,
                     "reg_addr_16bit": config.reg_addr_16bit,
-                    "rx_buf": bytearray(),
-                    "tx_buf": bytearray(),
+                    "rx_buf": bytearray(),  # raw-mode incoming (0x12 SLAVE_READ)
+                    "tx_buf": bytearray(),  # raw-mode outgoing (0x13 SLAVE_WRITE)
+                    "mailbox_rx": bytearray(),  # mailbox incoming (0x17 POP)
+                    "mailbox_tx": bytearray(),  # mailbox outgoing (0x16 PUSH)
                 },
             )
             _BUS.slaves[config.slave_addr]["initialized"] = True
@@ -267,7 +269,7 @@ class Device:
     def i2c_transfer(self, channel, address, tx, rx_size, monitor_vcc=False):
         cfg = _BUS.i2c_channels.get(channel)
         if cfg is None or cfg.role != 0:
-            self._fail(channel, "I2C master transfer on unconfigured channel", code=-2)
+            self._fail(channel, "I2C master transfer on unconfigured channel", code=-7)
         if not _BUS.vcc_enabled:
             self._fail(channel, "NO_POWER: shared VCC output is off", code=-10,
                   firmware_status=11)
@@ -292,9 +294,13 @@ class Device:
                 _page_write(slave["mirror"], slave["reg_ptr"], data)
             return _page_read(slave["mirror"], slave["reg_ptr"], rx_size)
         if rx_size:
-            return bytes(slave["tx_buf"][:rx_size]).ljust(rx_size, b"\x00")
-        # pure write into the slave receive side
-        slave["rx_buf"] += tx[1:] if slave["mode"] == 1 else tx  # mailbox: first byte is the pointer
+            src = slave["mailbox_tx"] if slave["mode"] == 1 else slave["tx_buf"]
+            return bytes(src[:rx_size]).ljust(rx_size, b"\x00")
+        # pure write into the slave receive side of the active logic mode
+        if slave["mode"] == 1:  # mailbox: first byte is the pointer
+            slave["mailbox_rx"] += tx[1:]
+        else:  # raw
+            slave["rx_buf"] += tx
         return b""
 
     def i2c_slave_read(self, channel, size):
@@ -307,3 +313,27 @@ class Device:
         slave = _BUS.slaves.get(_BUS.i2c_channels[channel].slave_addr)
         slave["tx_buf"] = bytearray(data)
         return len(data)
+
+    def i2c_mailbox_pop(self, channel, size):
+        slave = _BUS.slaves.get(_BUS.i2c_channels[channel].slave_addr)
+        got = bytes(slave["mailbox_rx"][:size])
+        del slave["mailbox_rx"][: len(got)]
+        return got
+
+    def i2c_mailbox_push(self, channel, data):
+        slave = _BUS.slaves.get(_BUS.i2c_channels[channel].slave_addr)
+        slave["mailbox_tx"] += bytes(data)
+        return len(data)
+
+    def i2c_abort(self, channel):
+        # Stateless model: nothing is ever in flight, so abort just counts.
+        _BUS.req_counts[channel] += 1
+        return b""
+
+    def i2c_reset(self, channel):
+        # SDK Guide section 7: reset clears the channel configuration,
+        # including a slave set up on that channel.
+        cfg = _BUS.i2c_channels.pop(channel, None)
+        if cfg is not None and cfg.role == 1:
+            _BUS.slaves.pop(cfg.slave_addr, None)
+        return b""

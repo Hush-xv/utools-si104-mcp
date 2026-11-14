@@ -40,8 +40,8 @@ async def main() -> int:
                 "si104_enumerate", "si104_device_info", "si104_spi_transfer",
                 "si104_spi_tx_words", "si104_spi_control", "si104_i2c_transfer",
                 "si104_i2c_read_regs", "si104_i2c_write_regs", "si104_i2c_scan",
-                "si104_i2c_slave", "si104_raw_request", "si104_read_vcc",
-                "si104_vcc_control",
+                "si104_i2c_control", "si104_i2c_slave", "si104_raw_request",
+                "si104_read_vcc", "si104_vcc_control",
             }
             missing = required - set(names)
             assert not missing, f"missing tools: {missing}"

@@ -67,8 +67,11 @@ mcp = FastMCP(
         "firmware_status; if completion_unknown is true the transfer may have "
         "hit the bus — verify device state before re-sending. firmware_status="
         "11 (NO_POWER) means the shared VCC output is off: enable it once with "
-        "si104_vcc_control. Run si104_enumerate first if a call says the "
-        "device is missing."
+        "si104_vcc_control. I2C channel recovery is si104_i2c_control (abort/"
+        "reset); mailbox FIFOs go through si104_i2c_slave push/pop. Device "
+        "errors carry code_meaning (official SDK Guide section 8 table). "
+        "Transient open conflicts (-2/-3) are retried automatically; run "
+        "si104_enumerate first if a call says the device is missing."
     ),
 )
 
@@ -152,6 +155,22 @@ def _decode_vcc_reply(raw):
     }
 
 
+def _query_vcc(dev, channel):
+    """0x1F empty query on the channel's I2C interface, decoded. Returns an
+    error dict instead of raising so diagnostics keep their other keys."""
+    try:
+        raw = dev.request(channel, 0x1F)
+    except Error as e:
+        return {"error": str(e), "code": e.code}
+    reply = _decode_vcc_reply(raw)
+    if reply is None:
+        return {
+            "error": f"VCC query reply too short ({len(raw)} bytes)",
+            "raw_hex": raw.hex(),
+        }
+    return reply
+
+
 def _parse_hex(value, name):
     """Accept '', None, 'deadbeef', '0xDEAD BEEF' -> bytes. ValueError on bad hex."""
     if value is None:
@@ -194,9 +213,17 @@ def _check_i2c_args(channel, address, timeout_ms, bus_hz, mode, addr_10bit=False
         )
 
 
-def _check_spi_args(sclk_hz, cpol, cpha):
-    if sclk_hz <= 0:
-        raise ValueError(f"sclk_hz must be positive, got {sclk_hz}")
+def _check_spi_args(sclk_hz, timeout_ms, cpol, cpha):
+    """Entry validation per SDK Guide section 6: SCLK 50k-40M, bus timeout
+    1-60000 ms, cpol/cpha each 0 or 1 (SPI modes 0-3)."""
+    if not 50_000 <= sclk_hz <= 40_000_000:
+        raise ValueError(
+            f"sclk_hz must be 50_000..40_000_000 (SDK Guide section 6), got {sclk_hz}"
+        )
+    if not 1 <= timeout_ms <= 60_000:
+        raise ValueError(
+            f"timeout_ms must be 1..60000 (SDK Guide section 6), got {timeout_ms}"
+        )
     if cpol not in (0, 1) or cpha not in (0, 1):
         raise ValueError(
             f"cpol and cpha must each be 0 or 1, got cpol={cpol}, cpha={cpha}"
@@ -209,6 +236,21 @@ def _check_spi_args(sclk_hz, cpol, cpha):
 # signature (USB disconnect, busy, ...) aborts the scan; that stays safe
 # even for transport signatures never yet observed.
 _SCAN_ABSENT = ((-10, 7), (-10, 8))
+
+# SDK Guide section 8 error table (official meanings of the unified codes).
+_ERROR_MEANING = {
+    -1: "invalid parameter",
+    -2: "device not found",
+    -3: "interface or device busy",
+    -4: "timeout",
+    -5: "USB disconnect",
+    -6: "malformed reply",
+    -7: "unsupported",
+    -8: "USB or other IO error",
+    -9: "buffer too small",
+    -10: "device rejected the request",
+    -11: "multiple devices — specify a serial",
+}
 
 
 # Per-call correlation id. FastMCP runs each sync tool in one worker thread,
@@ -237,17 +279,36 @@ def _with_device(serial, operate, name):
     """Open the dongle, run operate(dev), close. Device Error -> structured dict.
 
     Log classes: [param] bad input reaching the SDK layer, [device] structured
-    dongle error, [internal] unexpected python-side fault.
+    dongle error, [internal] unexpected python-side fault. Transient open
+    failures (SDK Guide section 8: -2 not found / -3 busy — also how a USB
+    mutex clash with the uTools GUI shows up) are retried twice with 100 ms
+    backoff. Only the open is retried, never a bus operation.
     """
     cid = getattr(_CALL, "cid", None) or next(_SEQ)
     try:
-        with Device(serial or None) as dev:
+        dev = None
+        for attempt in range(3):
+            try:
+                dev = Device(serial or None)
+                break
+            except Error as e:
+                if attempt == 2 or e.code not in (-2, -3):
+                    raise
+                LOG.warning(
+                    "#%d [device] open attempt %d/3 failed: %s; retrying in 100 ms",
+                    cid,
+                    attempt + 1,
+                    e,
+                )
+                time.sleep(0.1)
+        with dev:
             result = operate(dev)
     except Error as e:
         LOG.exception("#%d [device] error in %s", cid, name)
         result = {
             "error": str(e),
             "code": e.code,
+            "code_meaning": _ERROR_MEANING.get(e.code, f"code {e.code}"),
             "backend_code": e.backend_code,
             "firmware_status": e.firmware_status,
             "completion_unknown": e.completion_unknown,
@@ -287,13 +348,17 @@ def si104_enumerate() -> dict:
 
 @mcp.tool()
 def si104_device_info(serial: Optional[str] = None, channel: int = 0) -> dict:
-    """Read-only diagnostics: identity/firmware/runtime plus per-face capabilities, limits and the decoded 32-byte I2C channel status.
+    """Read-only diagnostics: identity/firmware/runtime plus per-face capabilities, limits, the decoded 32-byte I2C channel status and the selected channel's VCC rail state.
 
     The dongle exposes functional USB interfaces (TM section 1): 0-3 = I2C
     channels, 4 = SPI, 5 = maintenance. info/version/runtime are device-wide
     (queried on the SPI face); capabilities/limits come back for both the
     SPI face and the selected I2C channel; status is the 32-byte I2C
-    GET_STATUS of that channel, decoded per TM section 8.
+    GET_STATUS of that channel, decoded per TM section 8; vcc is the 0x1F
+    empty query of that channel (no bus traffic) — output_enabled=false
+    together with NO_POWER transfer failures means: si104_vcc_control.
+    Every section degrades independently; one failing query never blanks
+    the rest.
     """
     _log_call("si104_device_info", serial=serial, channel=channel)
     if not 0 <= channel <= 3:
@@ -321,6 +386,7 @@ def si104_device_info(serial: Optional[str] = None, channel: int = 0) -> dict:
                 "status": _decode_i2c_status(dev.status(channel)),
             },
         )
+        put("vcc", lambda: {"channel": channel, **_query_vcc(dev, channel)})
         return out
 
     return _with_device(serial, op, "si104_device_info")
@@ -373,9 +439,13 @@ def si104_spi_transfer(
             f"data_bits={data_bits}: tx length and rx_size must be multiples of {step} "
             "(complete words required, TM section 7)"
         )
+    if not 1 <= data_bits <= 32:
+        raise ValueError(
+            f"data_bits must be 1..32 for normal transfers (SDK Guide section 6), got {data_bits}"
+        )
     if not 0 <= rx_size <= MAX_PAYLOAD:
         raise ValueError(f"rx_size must be 0..512, got {rx_size}")
-    _check_spi_args(sclk_hz, cpol, cpha)
+    _check_spi_args(sclk_hz, timeout_ms, cpol, cpha)
 
     def op(dev):
         dev.spi_configure(
@@ -627,6 +697,7 @@ def si104_i2c_scan(
                     return {
                         "error": f"scan aborted at 0x{addr:02X}: {e}",
                         "code": e.code,
+                        "code_meaning": _ERROR_MEANING.get(e.code, f"code {e.code}"),
                         "firmware_status": e.firmware_status,
                         "found_before_abort": found,
                         "hint": "run si104_enumerate to check the dongle is present",
@@ -635,6 +706,36 @@ def si104_i2c_scan(
         return {"found": found, "range": [f"0x{first:02X}", f"0x{last:02X}"]}
 
     return _with_device(serial, op, "si104_i2c_scan")
+
+
+@mcp.tool()
+def si104_i2c_control(
+    serial: Optional[str] = None,
+    channel: int = 0,
+    action: str = "abort",
+) -> dict:
+    """I2C channel recovery: action="abort" cancels an in-flight transfer on the channel (ABORT=0x14); action="reset" resets the whole channel and clears its configuration (RESET=0x15).
+
+    Use when a transfer wedged (e.g. a target clock-stretches past every
+    timeout) or after any error that leaves the channel in an unknown state.
+    Executed operations cannot be rolled back (SDK Guide section 7); after a
+    reset, reconfigure the channel before the next transfer — master tools
+    configure on every call, slave setups must be re-applied.
+    """
+    if action not in ("abort", "reset"):
+        raise ValueError('action must be "abort" or "reset"')
+    if not 0 <= channel <= 3:
+        raise ValueError(f"channel must be 0..3, got {channel}")
+    _log_call("si104_i2c_control", serial=serial, channel=channel, action=action)
+
+    def op(dev):
+        if action == "abort":
+            dev.i2c_abort(channel)
+        else:
+            dev.i2c_reset(channel)
+        return {"action": action, "channel": channel}
+
+    return _with_device(serial, op, "si104_i2c_control")
 
 
 @mcp.tool()
@@ -654,14 +755,7 @@ def si104_read_vcc(serial: Optional[str] = None, channel: int = 0) -> dict:
         raise ValueError(f"channel must be 0..3, got {channel}")
 
     def op(dev):
-        raw = dev.request(channel, 0x1F)
-        reply = _decode_vcc_reply(raw)
-        if reply is None:
-            return {
-                "error": f"VCC query reply too short ({len(raw)} bytes)",
-                "raw_hex": raw.hex(),
-            }
-        return reply
+        return _query_vcc(dev, channel)
 
     return _with_device(serial, op, "si104_read_vcc")
 
@@ -728,7 +822,7 @@ def si104_spi_tx_words(
     tx = _parse_hex(tx_hex, "tx_hex")
     if data_bits not in (8, 16, 32):
         raise ValueError(f"data_bits must be 8/16/32 for long TX, got {data_bits}")
-    _check_spi_args(sclk_hz, cpol, cpha)
+    _check_spi_args(sclk_hz, timeout_ms, cpol, cpha)
     step = data_bits // 8
     if not tx or len(tx) % step:
         raise ValueError(f"tx_hex length must be a non-zero multiple of {step}, got {len(tx)} bytes")
@@ -828,7 +922,7 @@ def si104_i2c_slave(
     data_big_endian: bool = False,
     timeout_ms: int = 1000,
 ) -> dict:
-    """I2C slave buffer read/write on one channel (raw/mailbox/register logic modes).
+    """I2C slave buffer and mailbox FIFO access on one channel (raw/mailbox/register logic modes).
 
     Verified on hardware: the firmware keeps channel config across USB
     sessions while powered, so a slave configured by an earlier call stays
@@ -837,19 +931,28 @@ def si104_i2c_slave(
     + same slave_addr + same logic mode) instead of clobbering it; mismatch
     or missing config is (re)configured, then it polls GET_STATUS
     initialized=1 (up to ~1 s). slave_mode: 0 raw / 1 mailbox / 2 register
-    (TM section 8). action="write" sets the slave send buffer (what an
+    (TM section 8).
+    Buffer actions: action="write" sets the slave send buffer (what an
     external master reads next), up to 256 B; action="read" fetches bytes
-    the external master wrote, up to 512 B.
+    the external master wrote, up to 512 B — both hit the raw buffer path.
+    Mailbox FIFO actions (imply slave_mode=1): action="push" queues bytes
+    for the external master to pop, up to 256 B; action="pop" fetches bytes
+    an external master pushed, up to 512 B. In mailbox mode a pure master
+    write is pointer-phase first byte + mailbox payload.
     """
-    if action not in ("read", "write"):
-        raise ValueError('action must be "read" or "write"')
+    if action not in ("read", "write", "push", "pop"):
+        raise ValueError('action must be "read"/"write"/"push"/"pop"')
+    # Mailbox FIFO commands imply mailbox logic mode; upgrade the default so
+    # push/pop never silently operate on a raw/register channel.
+    if action in ("push", "pop") and slave_mode == 0:
+        slave_mode = 1
     data = _parse_hex(data_hex, "data_hex")
-    if action == "write":
+    if action in ("write", "push"):
         if not data:
-            raise ValueError('data_hex is required for action="write"')
+            raise ValueError(f'data_hex is required for action="{action}"')
         if len(data) > 256:
             raise ValueError(f"slave write carries at most 256 bytes, got {len(data)}")
-    if action == "read" and not 1 <= size <= MAX_PAYLOAD:
+    if action in ("read", "pop") and not 1 <= size <= MAX_PAYLOAD:
         raise ValueError(f"size must be 1..512, got {size}")
     _check_i2c_args(channel, slave_addr, timeout_ms, bus_hz, mode)
     _log_call("si104_i2c_slave", serial=serial, channel=channel, action=action, bytes=len(data), slave_mode=slave_mode)
@@ -892,17 +995,25 @@ def si104_i2c_slave(
                 "status": status,
                 "hint": "check slave_mode value and external pull-ups; config ack does not guarantee init",
             }
-        if action == "read":
-            got = dev.i2c_slave_read(channel, size)
+        if action in ("read", "pop"):
+            got = (
+                dev.i2c_mailbox_pop(channel, size)
+                if action == "pop"
+                else dev.i2c_slave_read(channel, size)
+            )
             return {
                 "initialized": True,
+                "action": action,
                 "data_hex": got.hex(),
                 "size": len(got),
                 "status": _decode_i2c_status(dev.status(channel)),
             }
+        if action == "push":
+            dev.i2c_mailbox_push(channel, data)
+            return {"initialized": True, "action": "push", "pushed_bytes": len(data)}
         # action == "write"
         dev.i2c_slave_write(channel, data)
-        return {"initialized": True, "written_bytes": len(data)}
+        return {"initialized": True, "action": "write", "written_bytes": len(data)}
 
     return _with_device(serial, op, "si104_i2c_slave")
 
