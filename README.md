@@ -16,7 +16,7 @@
 
 ## MCP 规范化
 
-- **结构化输出**：14 个工具声明 `outputSchema`（pydantic 模型，字段全可选、可空），成功调用同时返回 `structuredContent` 与等价的 text JSON——旧客户端不受影响，强类型客户端可直接按 schema 解析；诊断性附加字段经 `extra="allow"` 透传，不破坏校验
+- **结构化输出**：14 个工具声明 `outputSchema`（pydantic 模型，字段全可选、可空），成功调用同时返回 `structuredContent` 与等价的 text JSON——旧客户端不受影响，强类型客户端可直接按 schema 解析；诊断性附加字段经 `extra="allow"` 透传，不破坏校验。未赋值的可选字段在 `structuredContent` 中为 `null`（schema 已声明可空，pydantic dump 行为）
 - **工具注解与显示名**：`si104_enumerate / device_info / read_vcc / i2c_scan` 标注 `readOnlyHint=true`；`vcc_control / spi_control` 标注 `idempotentHint=true`；`i2c_control` 标注 `destructiveHint=true`（reset 清配置）；`raw_request` 有意不标注（万能透传不作承诺）；全部工具带 `title`
 - **错误语义**：参数校验失败与设备级失败均以 `isError=true` 返回（MCP 规范建议）；结果文本仍是完整结构化 JSON（SDK 会在其前加 `Error executing tool <tool>: ` 前缀，剥离后 `json.loads` 即得全部字段）；`completion_unknown` 语义不变
 - **输入侧 schema**：全部参数带 `Field` 描述（模型选工具时看到的是 inputSchema 而非 docstring），枚举类取值用 `Literal` 收紧——`action`×3、`data_bits`(长发送 8/16/32)、I2C `mode`(0-3)，错值在 schema 层就被拦住；运行时校验保留作纵深防御
