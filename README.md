@@ -191,6 +191,7 @@ CI（`.github/workflows/ci.yml`）：ruff + `unit_test.py` + `smoke_test.py`，�
 - `si104_i2c_scan` 仅 7-bit（0x08..0x77）；协议无独立 NACK 码，超时/IO 类错误按"该地址无设备"处理，设备级错误中断扫描
 - `si104_device_info` 的 status 解码按 TM §8 32 B 格式；interface=4 之外的接口号映射文档未明确，格式不符降级返回 raw_hex
 - 参数入口校验前移：channel 0-3、mode 0-3、7/10-bit 地址域、timeout_ms u16（0=固件默认 1000）、custom 模式 bus_hz 10k-1M、sclk_hz 正数、cpol/cpha ∈ {0,1}（SDK Guide §06）
+- **长发送完成态跨 USB 会话保持（真机实测）**：`tx_status` 报告最后一次完成记录（如 done_ok + 计数）而非 idle，且 abort 只清在途上传、不清完成记录——断电或新 BEGIN 才会重置；`si104_spi_control` 的 docstring 已按真机行为修正
 - `si104_raw_request` 请求与回复各 ≤512 B（SDK Guide §07）；508 是 SI104 自身寄存器镜像写（`i2c_reg_write`）的限制，两者勿混淆。绑定中的 `i2c_mailbox_push/pop`、`i2c_reg_read/write/reply`（固件 1.3 上已实测失效）、`i2c_abort/reset`、`ping` 未设专属工具，经 raw_request 兜底
 
 ## 官方错误码（SDK Guide §08）

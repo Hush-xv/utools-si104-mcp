@@ -237,7 +237,7 @@ class Device:
 
     def spi_abort(self):
         _BUS.long_tx_state = 5  # cancelled
-        return b""
+        return None  # real binding returns None — stay faithful
 
     def spi_tx_status(self):
         return self._pack_tx_status()
@@ -328,7 +328,7 @@ class Device:
     def i2c_abort(self, channel):
         # Stateless model: nothing is ever in flight, so abort just counts.
         _BUS.req_counts[channel] += 1
-        return b""
+        return None  # real binding returns None
 
     def i2c_reset(self, channel):
         # SDK Guide section 7: reset clears the channel configuration,
@@ -336,4 +336,4 @@ class Device:
         cfg = _BUS.i2c_channels.pop(channel, None)
         if cfg is not None and cfg.role == 1:
             _BUS.slaves.pop(cfg.slave_addr, None)
-        return b""
+        return None  # real binding returns None

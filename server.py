@@ -1117,11 +1117,15 @@ def si104_spi_control(
         Field(description="abort cancels a pending long-TX; tx_status reports its state"),
     ] = "tx_status",
 ) -> ControlOut:
-    """SPI session control: action="abort" cancels a pending long-TX upload or running transfer; action="tx_status" reports long-TX state (idle/uploading/committable/done_ok/done_error/cancelled_or_expired) with byte counters and result code.
+    """SPI session control: action="abort" cancels a pending long-TX upload; action="tx_status" reports the long-TX completion record (state idle/uploading/committable/done_ok/done_error/cancelled_or_expired) with byte counters and result code.
 
-    State is per USB session: in this stateless server every call is a fresh
-    session, so tx_status normally reports idle; it matters when a previous
-    call crashed mid-upload and the dongle needs recovery.
+    Hardware-verified nuance: the completion record persists across USB
+    sessions and is NOT cleared by abort (abort only cancels a pending
+    upload). After any long-TX — even from an earlier process — tx_status
+    reports that transaction (e.g. done_ok + counters) rather than idle,
+    until the dongle power-cycles or a new BEGIN starts. Use tx_status to
+    confirm a long-TX actually completed (SDK Guide section 8: the record
+    must match BEGIN/COMMIT/lengths/result).
     """
     if action not in ("abort", "tx_status"):
         raise ValueError('action must be "abort" or "tx_status"')
@@ -1129,8 +1133,8 @@ def si104_spi_control(
 
     def op(dev):
         if action == "abort":
-            reply = dev.spi_abort()
-            return {"action": "abort", "reply_hex": reply.hex()}
+            dev.spi_abort()  # binding returns None (0x22 ack carries no data)
+            return {"action": "abort"}
         return {"action": "tx_status", **_decode_spi_tx_status(dev.spi_tx_status())}
 
     return _with_device(serial, op, "si104_spi_control")
