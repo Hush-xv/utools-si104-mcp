@@ -113,8 +113,8 @@ expect_value_error("tx_words 1025 words",
                    lambda: tool("si104_spi_tx_words")(tx_hex="00" * 1025, data_bits=8), "1024")
 expect_value_error("raw command range",
                    lambda: tool("si104_raw_request")(command=256), "command")
-expect_value_error("F2 raw payload 509B",
-                   lambda: tool("si104_raw_request")(payload_hex="00" * 509), "508")
+expect_value_error("raw payload 513B (cap 512, SDK Guide s7)",
+                   lambda: tool("si104_raw_request")(payload_hex="00" * 513), "512")
 expect_value_error("vcc_control channel",
                    lambda: tool("si104_vcc_control")(channel=4), "channel")
 expect_value_error("device_info channel",

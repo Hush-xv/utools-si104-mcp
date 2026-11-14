@@ -8,7 +8,7 @@
 
 - **stdio 无状态**：每次工具调用原子化 `open → 操作 → close`，只在调用期间占用 dongle（毫秒级），与 uTools 主程序共存，无需常驻进程。同一时间只服务一个客户端，并发会撞 USB 互斥（后到者报 `SI104 not found`，重试即可）
 - **全 API 覆盖**：13 个工具，含 `si104_raw_request` 万能透传兜底（固件私有命令）与 `si104_vcc_control` 专用供电控制
-- **文档对齐**：容量上限（i2c TX≤504、寄存器读≤512 但自增按 256 页翻页/写≤508、SPI TX≤504、长发送 ≤1024 word）、速率预设（mode 0/1/2 = 100k/400k/1M，`bus_hz` 仅 mode=3 生效）、状态解码（SPI_TX_STATUS BB5HI、I2C GET_STATUS 32 B）均按官方《Technical Manual》/《SDK Guide》实现
+- **文档对齐**：容量上限（i2c TX≤504、寄存器读≤512 但自增按 256 页翻页、寄存器写≤504 含指针字节、raw request 请求/回复各≤512、SPI TX≤504、长发送 ≤1024 word）、速率预设（mode 0/1/2 = 100k/400k/1M，`bus_hz` 仅 mode=3 生效）、状态解码（SPI_TX_STATUS BB5HI、I2C GET_STATUS 32 B）均按官方《SDK Guide》/《Technical Manual》实现（容量与错误码已对照 SDK 1.0.5 官方文档复核）
 - **结构化错误**：`{error, code, backend_code, firmware_status, completion_unknown}`；**`completion_unknown=true` 时总线操作可能已发生，禁止盲目重发**（附 `retry_hint`）
 - **可诊断**：每调用关联 ID（`#N`）+ `[param]/[device]/[internal]` 分级日志；负载只记长度不记内容
 
@@ -134,7 +134,8 @@ CI（`.github/workflows/ci.yml`）：ruff + `unit_test.py` + `smoke_test.py`，�
 - **合并事务语义（实测）**：写后读的写入段对从机逻辑是"命令相位"，不落入从机接收缓冲；mailbox 模式纯写的首字节是指针（其余才入邮箱）
 - `si104_i2c_scan` 仅 7-bit（0x08..0x77）；协议无独立 NACK 码，超时/IO 类错误按"该地址无设备"处理，设备级错误中断扫描
 - `si104_device_info` 的 status 解码按 TM §8 32 B 格式；interface=4 之外的接口号映射文档未明确，格式不符降级返回 raw_hex
-- 参数入口校验前移：channel 0-3、7/10-bit 地址域、timeout_ms u16（0=固件默认 1000）、custom 模式 bus_hz 10k-1M、sclk_hz 正数
+- 参数入口校验前移：channel 0-3、mode 0-3、7/10-bit 地址域、timeout_ms u16（0=固件默认 1000）、custom 模式 bus_hz 10k-1M、sclk_hz 正数、cpol/cpha ∈ {0,1}（SDK Guide §06）
+- `si104_raw_request` 请求与回复各 ≤512 B（SDK Guide §07）；508 是 SI104 自身寄存器镜像写（`i2c_reg_write`）的限制，两者勿混淆。绑定中的 `i2c_mailbox_push/pop`、`i2c_reg_read/write/reply`（固件 1.3 上已实测失效）、`i2c_abort/reset`、`ping` 未设专属工具，经 raw_request 兜底
 
 ## 许可
 

@@ -61,7 +61,8 @@ mcp = FastMCP(
         "call opens and closes the device atomically. Payload caps: I2C master "
         "TX 504 B, RX 512 B (506 with VCC monitor), register read 512 B per "
         "transfer (the mirror auto-increment is page-scoped to 256 B), "
-        "register write 508 B, SPI TX 504 B / RX 512 B; larger transfers must "
+        "register write 504 B including pointer bytes, SPI TX 504 B / RX 512 "
+        "B; larger transfers must "
         "be chunked. Device errors come back as a dict with code/backend_code/"
         "firmware_status; if completion_unknown is true the transfer may have "
         "hit the bus — verify device state before re-sending. firmware_status="
@@ -794,13 +795,14 @@ def si104_raw_request(
     VCC_THRESHOLD=0x1F (empty query or u16 threshold_mv + u8 save),
     SPI_CONFIG=0x20, SPI_XFER=0x21, SPI_ABORT=0x22, SPI_TX_STATUS=0x26.
     Wrong commands can disturb device state — prefer dedicated tools when one
-    exists. payload ≤ 508 B; the reply (up to 512 B) comes back as reply_hex.
+    exists. payload and reply are each at most 512 bytes (SDK Guide section 7).
     """
     if not 0 <= command <= 255:
         raise ValueError(f"command must be 0..255, got {command}")
     payload = _parse_hex(payload_hex, "payload_hex")
-    # Vendor request payload cap is 508 B (Guide section 8; 512 is the binding cap).
-    _check_payload("payload_hex", len(payload), 508)
+    # SDK Guide section 7: request and reply are each at most 512 bytes.
+    # (508 is the SI104 register-mirror write cap — do not confuse the two.)
+    _check_payload("payload_hex", len(payload))
     _log_call("si104_raw_request", serial=serial, interface=interface, command=hex(command), payload_bytes=len(payload))
 
     def op(dev):

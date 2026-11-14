@@ -19,7 +19,7 @@ import struct
 LOG = logging.getLogger("si104-stub")
 
 STUB_SERIAL = "STUB-SI104"
-VID, PID = 0x1234, 0x5678
+VID, PID = 0x34B7, 0xE481  # official USB identity (SDK Guide section 2)
 PAGE = 256  # TM section 8: register auto-increment is page-scoped
 
 
@@ -104,7 +104,8 @@ def _page_write(mirror, ptr, data):
 class Device:
     def __init__(self, serial=None):
         if serial is not None and serial != STUB_SERIAL:
-            raise Error(f"SI104 not found (requested serial {serial!r})", code=-5)
+            # SDK Guide section 8 error table: -2 = device not found.
+            raise Error(f"SI104 not found (requested serial {serial!r})", code=-2)
         self.last_i2c_vcc = None
 
     def __enter__(self):
