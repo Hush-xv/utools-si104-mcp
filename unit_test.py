@@ -128,6 +128,8 @@ expect_value_error("spi data_bits 33",
                    lambda: tool("si104_spi_transfer")(data_bits=33), "data_bits")
 expect_value_error("spi tx 505B",
                    lambda: tool("si104_spi_transfer")(tx_hex="00" * 505), "504")
+expect_value_error("spi data_bits 33: range wins over alignment",
+                   lambda: tool("si104_spi_transfer")(tx_hex="00" * 5, data_bits=33), "1..32")
 expect_value_error("spi rx 513B",
                    lambda: tool("si104_spi_transfer")(rx_size=513), "rx_size")
 expect_value_error("spi 16-bit odd tx",
@@ -262,6 +264,30 @@ d = tool("si104_read_vcc")(serial="NOPE")
 check("unknown serial -> structured error", "error" in d
       and d.get("code_meaning") == "device not found"
       and "not found" in d["error"], str(d)[:90])
+
+# ------------------------------------------------- review-fix regressions
+# Stub "SPI not configured" must report -7 (unsupported), not -2 (not found).
+saved_spi = si104_stub._BUS.spi_config
+si104_stub._BUS.spi_config = None
+try:
+    si104_stub.Device().spi_tx_words((1,))
+    check("stub tx_words unconfigured -> -7", False, "no error")
+except si104_stub.Error as e:
+    check("stub tx_words unconfigured -> -7", e.code == -7, str(e)[:60])
+si104_stub._BUS.spi_config = saved_spi
+
+
+def _usb_boom():
+    raise si104_stub.Error("usb stack hiccup", code=-8)
+
+
+orig_enumerate = si104_stub.Device.enumerate
+si104_stub.Device.enumerate = staticmethod(_usb_boom)
+# tool() unwraps ToolError back into the structured dict, mirroring MCP clients.
+d = tool("si104_enumerate")()
+check("enumerate failure structured", d.get("code") == -8
+      and d.get("code_meaning") == "USB or other IO error", str(d)[:80])
+si104_stub.Device.enumerate = orig_enumerate
 
 fails = [n for n, ok in RESULTS if not ok]
 print(f"\n== summary == {len(RESULTS) - len(fails)}/{len(RESULTS)} PASS"

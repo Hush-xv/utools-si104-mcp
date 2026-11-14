@@ -228,7 +228,7 @@ class Device:
 
     def spi_tx_words(self, words):
         if _BUS.spi_config is None:
-            raise Error("SPI not configured", code=-2)
+            raise Error("SPI not configured", code=-7)
         data = b"".join(w.to_bytes(_BUS.spi_config.data_bits // 8, "big") for w in words)
         _BUS.tx_words_count = len(data) // (_BUS.spi_config.data_bits // 8)
         _BUS.long_tx_bytes = len(data)

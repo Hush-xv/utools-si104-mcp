@@ -404,6 +404,31 @@ _SEQ = itertools.count(1)
 _CALL = threading.local()
 
 
+def _error_result(e):
+    """Structured error dict for a vendor Error (SDK Guide section 8 fields)."""
+    result = {
+        "error": str(e),
+        "code": e.code,
+        "code_meaning": _ERROR_MEANING.get(e.code, f"code {e.code}"),
+        "backend_code": e.backend_code,
+        "firmware_status": e.firmware_status,
+        "completion_unknown": e.completion_unknown,
+        "hint": "run si104_enumerate to check the dongle is present",
+    }
+    if e.completion_unknown:
+        result["retry_hint"] = (
+            "completion_unknown=true: the transfer may have hit the bus; "
+            "verify device state before re-sending (SDK Guide section 8)"
+        )
+    if e.firmware_status == 11:  # TM section 5: NO_POWER
+        result["hint"] = (
+            "NO_POWER: the shared VCC output is off. Enable it once per "
+            "power-up with si104_vcc_control(channel=<I2C channel>, "
+            "enable=true), then retry"
+        )
+    return result
+
+
 def _log_call(name, **params):
     # Log sizes only, never payload bytes.
     cid = next(_SEQ)
@@ -450,26 +475,7 @@ def _with_device(serial, operate, name):
             result = operate(dev)
     except Error as e:
         LOG.exception("#%d [device] error in %s", cid, name)
-        result = {
-            "error": str(e),
-            "code": e.code,
-            "code_meaning": _ERROR_MEANING.get(e.code, f"code {e.code}"),
-            "backend_code": e.backend_code,
-            "firmware_status": e.firmware_status,
-            "completion_unknown": e.completion_unknown,
-            "hint": "run si104_enumerate to check the dongle is present",
-        }
-        if e.completion_unknown:
-            result["retry_hint"] = (
-                "completion_unknown=true: the transfer may have hit the bus; "
-                "verify device state before re-sending (SDK Guide section 8)"
-            )
-        if e.firmware_status == 11:  # TM section 5: NO_POWER
-            result["hint"] = (
-                "NO_POWER: the shared VCC output is off. Enable it once per "
-                "power-up with si104_vcc_control(channel=<I2C channel>, "
-                "enable=true), then retry"
-            )
+        result = _error_result(e)
     except ValueError as e:
         LOG.warning("#%d [param] %s: %s", cid, name, e)
         raise
@@ -494,7 +500,12 @@ def _with_device(serial, operate, name):
 )
 def si104_enumerate() -> EnumerateOut:
     """List SI104 dongles over USB. Returns {count, devices:[{vid,pid,bus,address,serial}]}. An empty list means nothing is plugged in."""
-    devices = Device.enumerate()
+    try:
+        devices = Device.enumerate()
+    except Error as e:
+        # Same structured error channel as every other tool (USB stack failure).
+        LOG.exception("[device] si104_enumerate failed")
+        raise ToolError(json.dumps(_error_result(e))) from None
     LOG.info("si104_enumerate -> %d device(s)", len(devices))
     return {"count": len(devices), "devices": devices}
 
@@ -603,15 +614,17 @@ def si104_spi_transfer(
     # Caps per Integration Guide section 3: normal SPI TX <= 504 B, RX <= 512 B.
     if len(tx) > 504:
         raise ValueError(f"tx_hex is {len(tx)} bytes; SPI normal transfer caps at 504 bytes per call")
+    if not 1 <= data_bits <= 32:
+        # Range check first: the word-alignment message below assumes a valid
+        # data_bits and would otherwise mislead (e.g. "multiples of 4" for 33).
+        raise ValueError(
+            f"data_bits must be 1..32 for normal transfers (SDK Guide section 6), got {data_bits}"
+        )
     step = data_bits // 8
     if data_bits > 8 and (len(tx) % step or rx_size % step):
         raise ValueError(
             f"data_bits={data_bits}: tx length and rx_size must be multiples of {step} "
             "(complete words required, TM section 7)"
-        )
-    if not 1 <= data_bits <= 32:
-        raise ValueError(
-            f"data_bits must be 1..32 for normal transfers (SDK Guide section 6), got {data_bits}"
         )
     if not 0 <= rx_size <= MAX_PAYLOAD:
         raise ValueError(f"rx_size must be 0..512, got {rx_size}")
@@ -1238,7 +1251,15 @@ def si104_i2c_slave(
     if action in ("read", "pop") and not 1 <= size <= MAX_PAYLOAD:
         raise ValueError(f"size must be 1..512, got {size}")
     _check_i2c_args(channel, slave_addr, timeout_ms, bus_hz, mode)
-    _log_call("si104_i2c_slave", serial=serial, channel=channel, action=action, bytes=len(data), slave_mode=slave_mode)
+    _log_call(
+        "si104_i2c_slave",
+        serial=serial,
+        channel=channel,
+        action=action,
+        bytes=len(data),
+        size=size,
+        slave_mode=slave_mode,
+    )
 
     def op(dev):
         # Firmware keeps channel config across USB sessions while powered.
