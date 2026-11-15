@@ -12,13 +12,14 @@ dependencies = ["mcp>=1.25,<2"]
 
 [project.scripts]
 si104-mcp = "server:main"
+si104-console = "si104_launcher:main"
 
 # The vendor wheel (utools_si104) is deliberately NOT a pip dependency — it is
 # license-restricted and must be installed from the official SDK package into
 # the same environment (see README).
 
 [tool.setuptools]
-py-modules = ["server", "si104_stub"]
+py-modules = ["server", "si104_stub", "si104_launcher"]
 packages = ["si104_console"]
 
 [tool.setuptools.package-data]

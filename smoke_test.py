@@ -1,12 +1,9 @@
 """Smoke test: spawn server.py over stdio, initialize, list tools, call a few.
 
-No hardware required for the no-device paths; with the dongle plugged in
-it also exercises the real open path. Without the vendor wheel the server
-falls back to si104_stub (STUB MODE) so the tool surface stays testable
-anywhere — behavior then comes from the test double, not firmware.
+Always starts the in-memory SDK test double. Real USB checks belong in the
+explicit hardware scripts; this smoke test must be safe on developer machines.
 """
 import asyncio
-import importlib.util
 import json
 import os
 import sys
@@ -16,10 +13,6 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 SERVER = Path(__file__).with_name("server.py")
-
-# Probe without importing: the vendor wheel loads a native DLL as a side effect.
-HAVE_REAL_SDK = importlib.util.find_spec("si104") is not None
-
 
 def parse(res):
     """CallToolResult text -> dict. The SDK prefixes tool-raised ToolError
@@ -32,11 +25,8 @@ def parse(res):
 
 
 async def main() -> int:
-    env = None
-    if not HAVE_REAL_SDK:
-        print("NOTE: vendor wheel not installed — running server in STUB MODE "
-              "(si104_stub test double, not real firmware)")
-        env = {**os.environ, "SI104_MCP_STUB": "1"}
+    print("NOTE: running in STUB MODE (si104_stub test double, not real firmware)")
+    env = {**os.environ, "SI104_MCP_STUB": "1"}
     params = StdioServerParameters(command=sys.executable, args=[str(SERVER)], env=env)
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:

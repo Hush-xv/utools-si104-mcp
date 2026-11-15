@@ -14,32 +14,33 @@ import struct
 import sys
 import threading
 import time
+from functools import wraps
 from typing import Annotated, Literal, Optional
 
+import anyio
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
-try:
-    from si104 import Device, SpiConfig, I2cConfig, Error
-except ImportError:
-    if os.environ.get("SI104_MCP_STUB") == "1":
-        # Test-double mode for unit_test/smoke_test/CI: no vendor wheel, the
-        # tool surface runs against si104_stub. Never used in production.
-        import si104_stub as _stub
+if os.environ.get("SI104_MCP_STUB") == "1":
+    # DEBUG: explicit test mode must win even when the vendor SDK is installed.
+    import si104_stub as _stub
 
-        Device, SpiConfig, I2cConfig, Error = (
-            _stub.Device,
-            _stub.SpiConfig,
-            _stub.I2cConfig,
-            _stub.Error,
-        )
-        print(
-            "si104-mcp: STUB MODE — using si104_stub test double, no real dongle",
-            file=sys.stderr,
-        )
-    else:
+    Device, SpiConfig, I2cConfig, Error = (
+        _stub.Device,
+        _stub.SpiConfig,
+        _stub.I2cConfig,
+        _stub.Error,
+    )
+    print("si104-mcp: STUB MODE — using si104_stub test double, no real dongle", file=sys.stderr)
+else:
+    try:
+        from si104 import Device, SpiConfig, I2cConfig, Error
+    except ModuleNotFoundError as e:
+        if e.name != "si104":
+            sys.stderr.write(f"si104-mcp: vendor SDK dependency is missing: {e}\n")
+            raise SystemExit(1) from e
         sys.stderr.write(
             "si104-mcp: the vendor SDK wheel is missing. Install it into this "
             "environment first (the same python that runs server.py), see README:\n"
@@ -47,6 +48,9 @@ except ImportError:
             "  pip install .\n"
         )
         raise SystemExit(1) from None
+    except (ImportError, OSError) as e:
+        sys.stderr.write(f"si104-mcp: vendor SDK or native library could not load: {e}\n")
+        raise SystemExit(1) from e
 
 # Logging goes to stderr; stdout is reserved for the MCP protocol on stdio.
 logging.basicConfig(
@@ -79,6 +83,35 @@ mcp = FastMCP(
         "si104_enumerate first if a call says the device is missing."
     ),
 )
+
+# DEBUG: MCP calls share a USB dongle; queue them without blocking HTTP's event loop.
+_MCP_DEVICE_LOCK = anyio.Lock()
+
+
+def _device_tool(**options):
+    """Register an async MCP adapter while keeping direct Python calls stable."""
+    def register(fn):
+        @wraps(fn)
+        async def invoke(**kwargs):
+            LOG.debug("mcp device job queued tool=%s", fn.__name__)
+            try:
+                with anyio.fail_after(30):
+                    await _MCP_DEVICE_LOCK.acquire()
+            except TimeoutError:
+                LOG.warning("mcp device job timed out in queue tool=%s", fn.__name__)
+                raise ToolError(json.dumps({"error": "device queue busy for over 30 seconds", "code": -3,
+                                            "code_meaning": _ERROR_MEANING[-3]})) from None
+            try:
+                LOG.debug("mcp device job start tool=%s", fn.__name__)
+                return await anyio.to_thread.run_sync(lambda: fn(**kwargs))
+            finally:
+                _MCP_DEVICE_LOCK.release()
+                LOG.debug("mcp device job done tool=%s", fn.__name__)
+
+        mcp.tool(**options)(invoke)
+        return fn
+
+    return register
 
 # 512: hard cap enforced by the SDK python binding (_integer(x, 512)).
 MAX_PAYLOAD = 512
@@ -126,6 +159,7 @@ class DeviceInfoOut(_ErrBase):
     spi: dict | None = None
     i2c: dict | None = None
     vcc: dict | None = None
+    section_errors: dict | None = None
 
 
 class TransferOut(_ErrBase):
@@ -378,12 +412,9 @@ def _check_spi_args(sclk_hz, timeout_ms, cpol, cpha):
         )
 
 
-# Per-address absence is an ALLOWLIST, not a blocklist: only firmware NACK
-# (status=7 IO_ERROR) and probe timeout (status=8 TIMEOUT) count as "nobody
-# at this address" — verified across ~18k live-bus probes. Any other
-# signature (USB disconnect, busy, ...) aborts the scan; that stays safe
-# even for transport signatures never yet observed.
-_SCAN_ABSENT = ((-10, 7), (-10, 8))
+# Only a NACK confirms that the probed address did not respond. A timeout can
+# also mean a stuck bus, so report it as an incomplete scan.
+_SCAN_ABSENT = ((-10, 7),)
 
 # SDK Guide section 8 error table (official meanings of the unified codes).
 _ERROR_MEANING = {
@@ -497,7 +528,7 @@ def _with_device(serial, operate, name):
 # ---------------------------------------------------------------- diagnostics
 
 
-@mcp.tool(
+@_device_tool(
     title="List SI104 dongles on USB",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
@@ -513,7 +544,7 @@ def si104_enumerate() -> EnumerateOut:
     return {"count": len(devices), "devices": devices}
 
 
-@mcp.tool(
+@_device_tool(
     title="Read-only device diagnostics",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
@@ -539,12 +570,15 @@ def si104_device_info(
 
     def op(dev):
         out = {}
+        section_errors = {}
 
         def put(key, fn):
             try:
                 out[key] = fn()
             except (Error, struct.error, RuntimeError) as e:
-                out[key] = {"error": str(e)}  # keep the rest of the diagnostics
+                LOG.debug("si104_device_info section failed channel=%d section=%s error=%s", channel, key, e)
+                out[key] = None
+                section_errors[key] = _error_result(e) if isinstance(e, Error) else {"error": str(e)}
 
         put("info", dev.info)
         put("version_hex", lambda: dev.version().hex() or "(empty)")
@@ -560,6 +594,8 @@ def si104_device_info(
             },
         )
         put("vcc", lambda: {"channel": channel, **_query_vcc(dev, channel)})
+        if section_errors:
+            out["section_errors"] = section_errors
         return out
 
     return _with_device(serial, op, "si104_device_info")
@@ -568,7 +604,7 @@ def si104_device_info(
 # ---------------------------------------------------------------------- SPI
 
 
-@mcp.tool(title="Atomic SPI full-duplex transfer")
+@_device_tool(title="Atomic SPI full-duplex transfer")
 def si104_spi_transfer(
     serial: _Serial = None,
     tx_hex: _HexBytes = "",
@@ -672,7 +708,7 @@ def _i2c_config(address, bus_hz, timeout_ms, mode=0, addr_10bit=False):
     )
 
 
-@mcp.tool(title="Atomic I2C master transfer")
+@_device_tool(title="Atomic I2C master transfer")
 def si104_i2c_transfer(
     serial: _Serial = None,
     channel: _Channel = 0,
@@ -743,7 +779,7 @@ def si104_i2c_transfer(
     return _with_device(serial, op, "si104_i2c_transfer")
 
 
-@mcp.tool(title="I2C register read")
+@_device_tool(title="I2C register read")
 def si104_i2c_read_regs(
     serial: _Serial = None,
     channel: _Channel = 0,
@@ -810,7 +846,7 @@ def si104_i2c_read_regs(
     return _with_device(serial, op, "si104_i2c_read_regs")
 
 
-@mcp.tool(title="I2C register write")
+@_device_tool(title="I2C register write")
 def si104_i2c_write_regs(
     serial: _Serial = None,
     channel: _Channel = 0,
@@ -884,10 +920,7 @@ def si104_i2c_write_regs(
     return _with_device(serial, op, "si104_i2c_write_regs")
 
 
-@mcp.tool(
-    title="Scan I2C bus addresses",
-    annotations=ToolAnnotations(readOnlyHint=True),
-)
+@_device_tool(title="Scan I2C bus addresses")
 def si104_i2c_scan(
     serial: _Serial = None,
     channel: _Channel = 0,
@@ -905,9 +938,8 @@ def si104_i2c_scan(
     you already know the address (go straight to si104_i2c_transfer).
 
     Each probe uses a 50 ms timeout so an empty bus sweeps in seconds.
-    Dongle-level errors (device lost, busy) abort the scan; per-address
-    errors count as "no device here" — the protocol has no dedicated NACK
-    code (TM §8).
+    NACK means no device at an address. A timeout or dongle-level error
+    aborts the scan and reports the address and responses found so far.
     """
     _log_call("si104_i2c_scan", serial=serial, channel=channel, bus_hz=bus_hz, mode=mode)
     if not 0x08 <= first <= last <= 0x77:
@@ -925,24 +957,21 @@ def si104_i2c_scan(
                 found.append(f"0x{addr:02X}")
                 LOG.info("si104_i2c_scan: 0x%02X acked", addr)
             except Error as e:
-                if (e.code, e.firmware_status) not in _SCAN_ABSENT:
+                if e.completion_unknown or (e.code, e.firmware_status) not in _SCAN_ABSENT:
                     LOG.warning("si104_i2c_scan aborted at 0x%02X: %s", addr, e)
-                    return {
-                        "error": f"scan aborted at 0x{addr:02X}: {e}",
-                        "code": e.code,
-                        "code_meaning": _ERROR_MEANING.get(e.code, f"code {e.code}"),
-                        "firmware_status": e.firmware_status,
-                        "found_before_abort": found,
-                        "aborted_at": f"0x{addr:02X}",
-                        "hint": "run si104_enumerate to check the dongle is present",
-                    }
-                continue  # allowlisted NACK/timeout = nobody at this address
+                    error = _error_result(e)
+                    error.update(error=f"scan aborted at 0x{addr:02X}: {e}",
+                                 found_before_abort=found, aborted_at=f"0x{addr:02X}")
+                    if e.firmware_status == 8:
+                        error["hint"] = "I2C bus timed out; check wiring and reinitialize any slave channel holding the bus"
+                    return error
+                continue  # allowlisted NACK = nobody at this address
         return {"found": found, "range": [f"0x{first:02X}", f"0x{last:02X}"]}
 
     return _with_device(serial, op, "si104_i2c_scan")
 
 
-@mcp.tool(
+@_device_tool(
     title="I2C channel abort/reset",
     annotations=ToolAnnotations(destructiveHint=True, idempotentHint=True),
 )
@@ -978,7 +1007,7 @@ def si104_i2c_control(
     return _with_device(serial, op, "si104_i2c_control")
 
 
-@mcp.tool(
+@_device_tool(
     title="Read VCC rail state",
     annotations=ToolAnnotations(readOnlyHint=True, openWorldHint=False),
 )
@@ -1006,7 +1035,7 @@ def si104_read_vcc(
     return _with_device(serial, op, "si104_read_vcc")
 
 
-@mcp.tool(
+@_device_tool(
     title="Enable/disable VCC output",
     annotations=ToolAnnotations(idempotentHint=True),
 )
@@ -1052,7 +1081,7 @@ def si104_vcc_control(
     return _with_device(serial, op, "si104_vcc_control")
 
 
-@mcp.tool(title="SPI long send (words)")
+@_device_tool(title="SPI long send (words)")
 def si104_spi_tx_words(
     serial: _Serial = None,
     tx_hex: Annotated[
@@ -1117,7 +1146,7 @@ def si104_spi_tx_words(
     return _with_device(serial, op, "si104_spi_tx_words")
 
 
-@mcp.tool(
+@_device_tool(
     title="SPI abort / tx status",
     annotations=ToolAnnotations(idempotentHint=True),
 )
@@ -1153,7 +1182,7 @@ def si104_spi_control(
 
 # No ToolAnnotations on purpose: the passthrough can do anything the
 # firmware allows, so promising read-only/idempotent would be wrong.
-@mcp.tool(title="Raw vendor request passthrough")
+@_device_tool(title="Raw vendor request passthrough")
 def si104_raw_request(
     serial: _Serial = None,
     interface: Annotated[
@@ -1197,13 +1226,13 @@ def si104_raw_request(
     return _with_device(serial, op, "si104_raw_request")
 
 
-@mcp.tool(title="I2C slave buffer & mailbox")
+@_device_tool(title="I2C slave configuration, buffer & mailbox")
 def si104_i2c_slave(
     serial: _Serial = None,
     channel: _Channel = 0,
     action: Annotated[
-        Literal["read", "write", "push", "pop"],
-        Field(description='read/write = raw slave buffer; push/pop = mailbox FIFO (implies slave_mode=1)'),
+        Literal["configure", "read", "write", "push", "pop"],
+        Field(description='configure = set slave mode/address only; read/write = raw buffer; push/pop = mailbox FIFO'),
     ] = "write",
     data_hex: Annotated[
         _HexBytes, Field(description="write/push payload hex, at most 256 B")
@@ -1215,7 +1244,7 @@ def si104_i2c_slave(
         int, Field(description="Slave address 0..127 for this channel's slave role")
     ] = 0x30,
     slave_mode: Annotated[
-        int, Field(description="Slave logic mode: 0 raw / 1 mailbox / 2 register (TM §8)")
+        Literal[0, 1, 2], Field(description="Slave logic mode: 0 raw / 1 mailbox / 2 register (TM §8)")
     ] = 0,
     reg_addr_16bit: Annotated[
         bool, Field(description="Register-mode slave uses 16-bit register pointers")
@@ -1240,11 +1269,13 @@ def si104_i2c_slave(
     sessions while powered, so a slave configured by an earlier call stays
     alive between MCP calls — master-side tools can talk to it in separate
     calls. The tool reuses an existing matching config (initialized + role=1
-    + same slave_addr + same logic mode) instead of clobbering it; mismatch
-    or missing config is (re)configured, then it polls GET_STATUS
+    + same slave_addr + same logic mode) for buffer/mailbox operations.
+    action="configure" always applies the requested config; mismatch or
+    missing config is (re)configured, then it polls GET_STATUS
     initialized=1 (up to ~1 s). slave_mode: 0 raw / 1 mailbox / 2 register
     (TM section 8).
-    Buffer actions: action="write" sets the slave send buffer (what an
+    action="configure" only configures and reports channel status; it does
+    not read or write slave data. Buffer actions: action="write" sets the slave send buffer (what an
     external master reads next), up to 256 B; action="read" fetches bytes
     the external master wrote, up to 512 B — both hit the raw buffer path.
     Mailbox FIFO actions (imply slave_mode=1): action="push" queues bytes
@@ -1252,12 +1283,16 @@ def si104_i2c_slave(
     an external master pushed, up to 512 B. In mailbox mode a pure master
     write is pointer-phase first byte + mailbox payload.
     """
-    if action not in ("read", "write", "push", "pop"):
-        raise ValueError('action must be "read"/"write"/"push"/"pop"')
+    if action not in ("configure", "read", "write", "push", "pop"):
+        raise ValueError('action must be "configure"/"read"/"write"/"push"/"pop"')
+    if slave_mode not in (0, 1, 2):
+        raise ValueError("slave_mode must be 0 (raw), 1 (mailbox), or 2 (register)")
     # Mailbox FIFO commands imply mailbox logic mode; upgrade the default so
     # push/pop never silently operate on a raw/register channel.
     if action in ("push", "pop") and slave_mode == 0:
         slave_mode = 1
+    if action in ("push", "pop") and slave_mode == 2:
+        raise ValueError("push/pop require mailbox mode; slave_mode=2 is register mode")
     data = _parse_hex(data_hex, "data_hex")
     if action in ("write", "push"):
         if not data:
@@ -1282,10 +1317,16 @@ def si104_i2c_slave(
         # Reuse a matching slave config instead of clobbering it with defaults.
         cur = _decode_i2c_status(dev.status(channel))
         reuse_config = (
-            cur.get("initialized")
+            action != "configure"
+            and cur.get("initialized")
             and cur.get("role") == 1
             and cur.get("slave_addr") == slave_addr
             and cur.get("slave_logic_mode") == slave_mode
+            and cur.get("mode") == mode
+            and cur.get("timeout_ms") == timeout_ms
+            and (mode != 3 or cur.get("bus_hz") == bus_hz)
+            and (slave_mode != 2 or cur.get("reg_addr_width") == (16 if reg_addr_16bit else 8))
+            and not data_16bit and not data_big_endian
         )
         # DEBUG: make persistent-config reuse vs. mode-switch decisions observable.
         LOG.debug(
@@ -1315,16 +1356,24 @@ def si104_i2c_slave(
         initialized = False
         for _ in range(20):
             status = _decode_i2c_status(dev.status(channel))
-            if status.get("initialized"):
+            if (status.get("initialized") and status.get("role") == 1
+                    and status.get("slave_addr") == slave_addr
+                    and status.get("slave_logic_mode") == slave_mode
+                    and (slave_mode != 2 or status.get("reg_addr_width") == (16 if reg_addr_16bit else 8))):
                 initialized = True
                 break
             time.sleep(0.05)
         if not initialized:
+            LOG.debug("si104_i2c_slave status mismatch channel=%d requested_addr=0x%02X mode=%d status=%s",
+                      channel, slave_addr, slave_mode, status)
             return {
-                "error": "channel did not reach initialized=1 after slave config",
+                "error": "channel did not report the requested slave configuration",
                 "status": status,
-                "hint": "check slave_mode value and external pull-ups; config ack does not guarantee init",
+                "hint": "check slave mode and external pull-ups; config ack does not guarantee the requested state",
             }
+        if action == "configure":
+            LOG.debug("si104_i2c_slave configured channel=%d addr=0x%02X mode=%d", channel, slave_addr, slave_mode)
+            return {"initialized": True, "action": action, "status": status}
         if action in ("read", "pop"):
             got = (
                 dev.i2c_mailbox_pop(channel, size)
@@ -1375,6 +1424,13 @@ def _console_response(request):  # noqa: ARG001 — Starlette passes the Request
     return HTMLResponse(files("si104_console").joinpath("console.html").read_text(encoding="utf-8"))
 
 
+def _health_response(request):  # noqa: ARG001 — Starlette passes the Request
+    from starlette.responses import JSONResponse
+
+    LOG.debug("_health_response: service is ready")
+    return JSONResponse({"service": "si104-mcp", "version": "1.1.0", "status": "ok", "ready": True})
+
+
 def _run_http():
     """Streamable-HTTP entry for the web console (README: 网页控制台).
 
@@ -1387,7 +1443,10 @@ def _run_http():
     from starlette.routing import Route
 
     host = os.environ.get("SI104_MCP_HOST", "127.0.0.1")
-    port = int(os.environ.get("SI104_MCP_PORT", "8800"))
+    port_text = os.environ.get("SI104_MCP_PORT", "8800")
+    if not port_text.isdecimal() or not 1 <= int(port_text) <= 65535:
+        raise SystemExit(f"si104-mcp: SI104_MCP_PORT must be 1..65535, got {port_text!r}")
+    port = int(port_text)
     token = os.environ.get("SI104_MCP_TOKEN") or None
     if host not in ("127.0.0.1", "localhost", "::1"):
         LOG.warning(
@@ -1396,6 +1455,7 @@ def _run_http():
         )
     app = mcp.streamable_http_app()
     app.router.routes.append(Route("/", _console_response, methods=["GET"]))
+    app.router.routes.append(Route("/health", _health_response, methods=["GET"]))
     if token:
         app = _BearerGate(app, token)
     LOG.info("[http] console: http://%s:%d/  |  mcp: /mcp%s",
@@ -1404,10 +1464,14 @@ def _run_http():
 
 
 def main():
-    if os.environ.get("SI104_MCP_TRANSPORT", "stdio").strip().lower() == "http":
+    transport = os.environ.get("SI104_MCP_TRANSPORT", "stdio").strip().lower()
+    LOG.debug("main transport=%s", transport)
+    if transport == "http":
         _run_http()
-    else:
+    elif transport == "stdio":
         mcp.run()  # stdio
+    else:
+        raise SystemExit(f"si104-mcp: SI104_MCP_TRANSPORT must be stdio or http, got {transport!r}")
 
 
 if __name__ == "__main__":

@@ -7,8 +7,8 @@ firmware emulator — any behavior not spelled out here is unspecified; when
 real-hardware questions arise, run the hardware suites instead. Upgrade
 trigger: a test needs vendor behavior this file does not model.
 
-Activated by server.py only when SI104_MCP_STUB=1 and the vendor wheel is
-missing. State lives at module level (one virtual dongle) to mimic the
+Activated by server.py when SI104_MCP_STUB=1, regardless of vendor wheel
+availability. State lives at module level (one virtual dongle) to mimic the
 firmware keeping channel/VCC config across USB sessions while powered.
 """
 from __future__ import annotations
@@ -163,7 +163,7 @@ class Device:
             _BUS.req_counts[interface],
             _BUS.err_counts[interface],
             slave["mode"] if slave else 0,
-            2 if (slave and slave.get("reg_addr_16bit")) else 1,
+            16 if (slave and slave.get("reg_addr_16bit")) else 8,
             slave.get("reg_ptr", 0) if slave else 0,
             len(slave.get("mailbox_rx", b"")) if slave else 0,
             len(slave.get("mailbox_tx", b"")) if slave else 0,
@@ -236,7 +236,10 @@ class Device:
         return _BUS.tx_words_count
 
     def spi_abort(self):
-        _BUS.long_tx_state = 5  # cancelled
+        # A completed transfer remains visible until a new BEGIN or power cycle.
+        if _BUS.long_tx_state in (1, 2):
+            _BUS.long_tx_state = 5
+        LOG.debug("spi_abort state=%d", _BUS.long_tx_state)  # TODO: remove debug logging before release
         return None  # real binding returns None — stay faithful
 
     def spi_tx_status(self):
@@ -248,12 +251,19 @@ class Device:
             "i2c_configure channel=%d role=%d addr=0x%X mode=%d",
             channel, config.role, config.slave_addr, config.slave_mode,
         )
+        previous = _BUS.i2c_channels.get(channel)
+        if previous and previous.role == 1 and (config.role != 1 or previous.slave_addr != config.slave_addr):
+            old = _BUS.slaves.get(previous.slave_addr)
+            if old and old["channel"] == channel:
+                _BUS.slaves.pop(previous.slave_addr)
+                LOG.debug("i2c_configure removed old slave channel=%d addr=0x%X", channel, previous.slave_addr)
         _BUS.i2c_channels[channel] = config
         if config.role == 1:
             slave = _BUS.slaves.setdefault(
                 config.slave_addr,
                 {
                     "mode": config.slave_mode,
+                    "channel": channel,
                     "initialized": False,
                     "mirror": bytearray(4096),
                     "reg_ptr": 0,
@@ -266,6 +276,7 @@ class Device:
             )
             slave.update(
                 mode=config.slave_mode,
+                channel=channel,
                 reg_addr_16bit=config.reg_addr_16bit,
                 initialized=True,
             )
@@ -342,6 +353,6 @@ class Device:
         # SDK Guide section 7: reset clears the channel configuration,
         # including a slave set up on that channel.
         cfg = _BUS.i2c_channels.pop(channel, None)
-        if cfg is not None and cfg.role == 1:
+        if cfg is not None and cfg.role == 1 and _BUS.slaves.get(cfg.slave_addr, {}).get("channel") == channel:
             _BUS.slaves.pop(cfg.slave_addr, None)
         return None  # real binding returns None

@@ -17,7 +17,7 @@
 ## MCP 规范化
 
 - **结构化输出**：14 个工具声明 `outputSchema`（pydantic 模型，字段全可选、可空），成功调用同时返回 `structuredContent` 与等价的 text JSON——旧客户端不受影响，强类型客户端可直接按 schema 解析；诊断性附加字段经 `extra="allow"` 透传，不破坏校验。未赋值的可选字段在 `structuredContent` 中为 `null`（schema 已声明可空，pydantic dump 行为）
-- **工具注解与显示名**：`si104_enumerate / device_info / read_vcc / i2c_scan` 标注 `readOnlyHint=true`；`vcc_control / spi_control` 标注 `idempotentHint=true`；`i2c_control` 标注 `destructiveHint=true`（reset 清配置）；`raw_request` 有意不标注（万能透传不作承诺）；全部工具带 `title`
+- **工具注解与显示名**：`si104_enumerate / device_info / read_vcc` 标注 `readOnlyHint=true`；扫描会重配通道并读取目标，不标记为只读；`vcc_control / spi_control` 标注 `idempotentHint=true`；`i2c_control` 标注 `destructiveHint=true`（reset 清配置）；`raw_request` 有意不标注（万能透传不作承诺）；全部工具带 `title`
 - **错误语义**：参数校验失败与设备级失败均以 `isError=true` 返回（MCP 规范建议）；结果文本仍是完整结构化 JSON（SDK 会在其前加 `Error executing tool <tool>: ` 前缀，剥离后 `json.loads` 即得全部字段）；`completion_unknown` 语义不变
 - **输入侧 schema**：全部参数带 `Field` 描述（模型选工具时看到的是 inputSchema 而非 docstring），枚举类取值用 `Literal` 收紧——`action`×3、`data_bits`(长发送 8/16/32)、I2C `mode`(0-3)，错值在 schema 层就被拦住；运行时校验保留作纵深防御
 
@@ -39,16 +39,13 @@
 wheel 与 MCP 依赖必须装进**同一环境**（server 用哪套 python 启动，就用哪套的 si104）：
 
 ```bat
-:: 1) 安装官方 SDK wheel（自备 SDK 包；Linux 换 linux_x86_64.whl）
-pip install <sdk包>\python\wheels\utools_si104-1.0.5-py3-none-win_amd64.whl
-
-:: 2) 本仓库
+:: 1) 下载仓库并创建专用 Python 环境
 git clone https://github.com/Hush-xv/utools-si104-mcp.git
 cd utools-si104-mcp
 python -m venv .venv
+:: 2) 官方 SDK wheel 与本项目安装到同一个环境（SDK 包需自备）
+.venv\Scripts\python.exe -m pip install <sdk包>\python\wheels\utools_si104-1.0.5-py3-none-win_amd64.whl
 .venv\Scripts\python -m pip install .
-
-:: 也可 pip install . 装成本包（提供 si104-mcp 命令行入口）
 ```
 
 Linux 同理（`.venv/bin/python`；Linux 还需系统 libusb）。
@@ -79,9 +76,9 @@ export SI104_LIBUSB=$R/libusb-1.0.dylib
 | `si104_i2c_transfer` | 原子 I2C 主机事务（写后读重复 START）；`monitor_vcc=true` 附 vcc 字段 |
 | `si104_i2c_read_regs` | 主机寄存器读：指针相位 + 重复 START（实测验证）；`reg_addr_16bit=true` 时 reg 0..65535，指针 2 字节 MSB-first |
 | `si104_i2c_write_regs` | 主机寄存器写：指针 + 数据一条事务；16-bit 寄存器地址实测可用 |
-| `si104_i2c_scan` | 7-bit 总线扫描；设备级错误（未找到/忙/断开等非 NACK 签名）中断并返回 `found_before_abort` |
+| `si104_i2c_scan` | 7-bit 总线扫描；NACK 表示该地址未应答，超时/设备级错误中止并返回 `aborted_at`、`found_before_abort` 与完整错误字段 |
 | `si104_i2c_control` | I2C 通道恢复：abort 取消在途事务（0x14）/ reset 复位通道并清配置（0x15），复位后需重配 |
-| `si104_i2c_slave` | 从机缓冲读/写（raw 缓冲）+ 邮箱 FIFO push/pop（自动切 mailbox 逻辑模式，push≤256 B/pop≤512 B）；固件在供电期间保持通道配置，工具复用匹配配置不覆盖 |
+| `si104_i2c_slave` | `configure` 明确重配从机地址、模式与数据格式并返回状态；read/write 操作原始缓冲，push/pop 操作邮箱 FIFO（push≤256 B/pop≤512 B）；缓冲操作复用匹配配置，不覆盖现有数据 |
 | `si104_raw_request` | vendor request 透传（EVENT_POLL=0x1B 等无专属工具的命令） |
 | `si104_read_vcc` | VCC 供电状态（`0x1F` 空查询，免总线流量） |
 | `si104_vcc_control` | 使能/关断共享 VCC 输出（`0x1E`，NO_POWER 恢复专用），回读 `0x1F` 确认设备侧状态 |
@@ -150,7 +147,9 @@ SI104_MCP_TRANSPORT=http .venv/bin/python server.py     # 默认 http://127.0.0.
 set SI104_MCP_TRANSPORT=http && .venv\Scripts\python.exe server.py
 ```
 
-打开 http://127.0.0.1:8800：选择设备与 I2C 通道，在主机、从机和 SPI 工作区操作；每路通道的表单草稿独立保存，实际状态可通过“读取四路状态”刷新。VCC 为所有 I2C 通道共享，事务记录仅保留在当前页面会话中。
+打开 http://127.0.0.1:8800：选择设备与 I2C 通道，在主机、从机和 SPI 工作区操作；从机寄存器模式可只配置地址与指针位宽，操作结果在右侧显示完整 HEX。每路通道的表单草稿独立保存，实际状态可通过“读取四路状态”刷新。VCC 为所有 I2C 通道共享，事务记录仅保留在当前页面会话中。
+
+可双击 Windows 的 `start-windows.cmd`，或运行 `.venv/bin/python si104_launcher.py`（macOS/Linux）。启动器检查本机 `/health`：已有 SI104 服务则复用，未启动则启动服务并等待就绪，然后打开浏览器。端口由其他程序占用或 SDK 加载失败时会报告原因或日志路径。安装后的 `si104-console` 命令使用同一入口。`/health` 只返回服务身份和就绪状态，不访问 USB。macOS 从仓库源码启动时可自动定位仓库附带的 arm64 库；wheel 不包含 `runtime/`，从其他目录安装后请显式配置原生库路径。
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
@@ -159,7 +158,7 @@ set SI104_MCP_TRANSPORT=http && .venv\Scripts\python.exe server.py
 | `SI104_MCP_PORT` | `8800` | 监听端口 |
 | `SI104_MCP_TOKEN` | 未设 | 设置后 `/mcp` 要求 `Authorization: Bearer <token>`，控制台页面顶部粘贴即可 |
 
-**安全边界**：默认仅监听本机回环；控制台可执行包括 `si104_raw_request` 在内的全部工具——请勿在不受信任的网络暴露，跨机访问务必设置 `SI104_MCP_TOKEN`。验证：`python http_test.py`(10 项，本机跑；CI 保持 stdio 套件)。
+**安全边界**：默认仅监听本机回环；控制台可执行包括 `si104_raw_request` 在内的全部工具——请勿在不受信任的网络暴露，跨机访问务必设置 `SI104_MCP_TOKEN`。HTTP 与网页回归由 CI 的替身模式验证。
 
 ## 使用方法
 
@@ -178,13 +177,13 @@ set SI104_MCP_TRANSPORT=http && .venv\Scripts\python.exe server.py
 .venv\Scripts\python smoke_test.py
 ```
 
-`unit_test.py` 覆盖参数校验、二进制解码器和工具全流程（基于测试替身，无需硬件）；`smoke_test.py` 期望输出 `SMOKE OK`：14 工具注册 + 无 dongle 时结构化错误路径。插上 dongle 后建议按顺序跑一遍实机验证：`device_info`（对照 limits）→ `i2c_scan` → SPI 回环（MOSI-MISO 短接，8/16/32 bit × CS 极性矩阵）→ `read_vcc` 与 `raw_request(0x1F)` 互证 → `i2c_control` 与 mailbox push/pop（`hw_test.py` 末尾已含）。
+`unit_test.py` 覆盖参数校验、二进制解码器和工具流程；`smoke_test.py`、`http_test.py` 始终使用测试替身，插着真机也不会发送总线事务。真机测试请显式运行 `hw_test.py` 等硬件脚本并确认接线；空总线和卡住的总线需分别复测扫描超时语义。
 
 ## 无硬件自测与 CI
 
-仓库自带 `si104_stub.py` 测试替身（内存版 SDK 子集模型，**非固件仿真器**）：当环境里没有 vendor wheel 时，`smoke_test.py`/CI 自动以 STUB MODE 启动服务器（stderr 醒目提示），工具面、参数校验、错误路径全部可测；`server.py` 生产启动不受影响——缺 wheel 时仍报错退出并给出安装指引（测试场景可用 `SI104_MCP_STUB=1` 强制替身模式）。
+仓库自带 `si104_stub.py` 测试替身（内存版 SDK 子集模型，**非固件仿真器**）：设置 `SI104_MCP_STUB=1` 时，即使装有官方 SDK 也只使用替身。`unit_test.py`、`smoke_test.py` 和 `http_test.py` 不访问真机；普通生产启动缺 wheel 时会报错退出并给出安装指引。
 
-CI（`.github/workflows/ci.yml`）：ruff + `unit_test.py` + `smoke_test.py`，矩阵 ubuntu/windows × Python 3.10/3.13，不依赖 vendor wheel 与硬件。实机行为仍以 `hw_test.py` / `stress_boundary_test.py` 为准。
+CI（`.github/workflows/ci.yml`）：ruff、单元、stdio/HTTP 契约和 Node 网页回归，矩阵 ubuntu/windows × Python 3.10/3.13，不依赖 vendor wheel 与硬件。实机行为仍以显式运行的 `hw_test.py` / `stress_boundary_test.py` 为准。
 
 ## 发布清单（维护者）
 
@@ -198,15 +197,15 @@ CI（`.github/workflows/ci.yml`）：ruff + `unit_test.py` + `smoke_test.py`，�
 - 容量上限各工具不同，详见工具 docstring（AI 可见）；错误信息含参数名与合法范围
 - **USB 接口号 = 功能面**（TM §1，实测确认）：0-3 = I2C 通道 0-3，4 = SPI，5 = 维护。I2C 类命令（GET_STATUS 32B、VCC_SET/0x1F 阈值查询）必须发给对应 I2C 接口，发 SPI 面（4）会报 `status=4` 拒绝；`si104_device_info` 已按面分组返回 SPI/I2C 诊断
 - **NO_POWER（firmware_status=11）**：共享 VCC 输出默认关闭，I2C 总线无上拉电源时传输报 `status=11`。使能一次即可（掉电前有效）：`si104_vcc_control(channel, enable=true)`——错误 hint 已自动携带此提示；实测使能后 VCC ≈ 3.1 V
-- `si104_i2c_slave`：**实测固件在供电期间跨 USB 会话保持通道配置**——一次配置后，主机侧工具可在后续调用里直接访问从机；工具对已初始化且匹配（role=1 + 同地址 + 同逻辑模式）的通道复用配置不覆盖，不匹配才重配
+- `si104_i2c_slave`：**实测固件在供电期间跨 USB 会话保持通道配置**——一次配置后，主机侧工具可在后续调用里直接访问从机；`configure` 明确重配，缓冲操作复用匹配的角色、地址、逻辑模式和寄存器指针位宽
 - `si104_i2c_scan` 实测：能在回环总线上正确扫出从机地址
 - **寄存器式访问已实测重建**：绑定 `read_buffer/write_buffer` 对固件 1.3 **已失效**（连本通道镜像都报 `invalid I2C write/read command/length`，文档漂移实锤），工具重建在 `i2c_transfer` 指针相位上；`reg_addr_16bit=true` 时指针 2 字节 MSB-first，reg 0..65535 **实测可用**
 - **合并事务语义（实测）**：写后读的写入段对从机逻辑是"命令相位"，不落入从机接收缓冲；mailbox 模式纯写的首字节是指针（其余才入邮箱）
-- `si104_i2c_scan` 仅 7-bit（0x08..0x77）；协议无独立 NACK 码，超时/IO 类错误按"该地址无设备"处理，设备级错误中断扫描
+- `si104_i2c_scan` 仅 7-bit（0x08..0x77）；固件状态 7 作为该地址未应答，状态 8 超时或其他设备级错误中断扫描并返回位置及已发现地址
 - `si104_device_info` 的 status 解码按 TM §8 32 B 格式；interface=4 之外的接口号映射文档未明确，格式不符降级返回 raw_hex
-- 参数入口校验前移：channel 0-3、mode 0-3、7/10-bit 地址域、timeout_ms u16（0=固件默认 1000）、custom 模式 bus_hz 10k-1M、sclk_hz 正数、cpol/cpha ∈ {0,1}（SDK Guide §06）
+- 参数入口校验前移：channel 0-3、mode 0-3、7/10-bit 地址域、timeout_ms u16（0=固件默认 1000）、custom 模式 bus_hz 10k-1M、SPI sclk_hz 50k-40M、cpol/cpha ∈ {0,1}（SDK Guide §06）
 - **长发送完成态跨 USB 会话保持（真机实测）**：`tx_status` 报告最后一次完成记录（如 done_ok + 计数）而非 idle，且 abort 只清在途上传、不清完成记录——断电或新 BEGIN 才会重置；`si104_spi_control` 的 docstring 已按真机行为修正
-- `si104_raw_request` 请求与回复各 ≤512 B（SDK Guide §07）；508 是 SI104 自身寄存器镜像写（`i2c_reg_write`）的限制，两者勿混淆。绑定中的 `i2c_mailbox_push/pop`、`i2c_reg_read/write/reply`（固件 1.3 上已实测失效）、`i2c_abort/reset`、`ping` 未设专属工具，经 raw_request 兜底
+- `si104_raw_request` 请求与回复各 ≤512 B（SDK Guide §07）；508 是 SI104 自身寄存器镜像写（`i2c_reg_write`）的限制，两者勿混淆。固件 1.3 上已实测失效的 `i2c_reg_read/write/reply` 由主机寄存器工具使用原子事务替代；`ping` 等未封装命令可经 raw_request 访问
 
 ## 官方错误码（SDK Guide §08）
 
