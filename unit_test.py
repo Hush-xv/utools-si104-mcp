@@ -71,11 +71,11 @@ check("decode spi_tx_status", d["state"] == "done_ok" and d["total_bytes"] == 10
 check("decode spi_tx_status short", "raw_hex" in server._decode_spi_tx_status(b"\x01"))
 
 raw = struct.pack(
-    "<4B I 2H 2I 2B 5H", 1, 0, 0, 1, 400_000, 0x45, 1000, 5, 1, 2, 1, 0x10, 3, 0, 0, 0
+    "<4B I 2H 2I 2B 5H", 1, 0, 0, 1, 400_000, 0x45, 1000, 5, 1, 2, 8, 0x10, 3, 0, 0, 0
 )
 d = server._decode_i2c_status(raw)
 check("decode i2c_status", d["role"] == 1 and d["initialized"] is True
-      and d["bus_hz"] == 400_000 and d["slave_logic_mode"] == 2
+      and d["bus_hz"] == 400_000 and d["slave_logic_mode"] == 2 and d["reg_addr_width"] == 8
       and d["mailbox_rx_len"] == 3, str(d))
 check("decode i2c_status short", "raw_hex" in server._decode_i2c_status(b"\x00" * 8))
 
@@ -166,6 +166,10 @@ expect_value_error("i2c_control bad channel",
                    lambda: tool("si104_i2c_control")(channel=4), "channel")
 expect_value_error("mailbox push 257B",
                    lambda: tool("si104_i2c_slave")(action="push", data_hex="00" * 257), "256")
+expect_value_error("slave mode out of range",
+                   lambda: tool("si104_i2c_slave")(action="configure", slave_mode=3), "slave_mode")
+expect_value_error("mailbox action rejected in register mode",
+                   lambda: tool("si104_i2c_slave")(action="push", slave_mode=2, data_hex="AA"), "slave_mode")
 expect_value_error("device_info channel",
                    lambda: tool("si104_device_info")(channel=4), "channel")
 
@@ -218,6 +222,16 @@ check("register slave ch1 configured", d.get("written_bytes") == 3, str(d)[:90])
 d = tool("si104_i2c_scan")(channel=0)
 check("scan finds 0x45", d.get("found") == ["0x45"], str(d))
 
+with patch.object(si104_stub.Device, "i2c_transfer",
+                  side_effect=si104_stub.Error("bus held low", code=-10, backend_code=23,
+                                               firmware_status=8, completion_unknown=True)):
+    d = tool("si104_i2c_scan")(channel=0, first=0x08, last=0x08)
+    check("scan timeout abort keeps full error and address",
+          d.get("aborted_at") == "0x08" and d.get("found_before_abort") == []
+          and d.get("firmware_status") == 8 and d.get("backend_code") == 23
+          and d.get("completion_unknown") is True and "retry_hint" in d
+          and "timed out" in d.get("hint", "").lower(), str(d)[:160])
+
 d = tool("si104_i2c_write_regs")(channel=0, address=0x45, reg=0x10, data_hex="DEADBEEF")
 check("write_regs ok", d.get("written_bytes") == 4, str(d))
 
@@ -254,6 +268,24 @@ check("raw slave switches back to register mode", d.get("written_bytes") == 1
 d = tool("si104_i2c_read_regs")(channel=0, address=0x45, reg=0x10, size=4)
 check("register mirror remains accessible after mode switch", d.get("data_hex") == "deadbeef", str(d))
 
+saved_buffer = bytes(si104_stub._BUS.slaves[0x45]["tx_buf"])
+d = tool("si104_i2c_slave")(channel=1, action="configure", slave_addr=0x45,
+                            slave_mode=2, reg_addr_16bit=True)
+check("configure-only changes pointer width without writing buffer",
+      d.get("action") == "configure" and d.get("status", {}).get("reg_addr_width") == 16
+      and bytes(si104_stub._BUS.slaves[0x45]["tx_buf"]) == saved_buffer, str(d)[:120])
+d = tool("si104_i2c_slave")(channel=1, action="configure", slave_addr=0x45,
+                            slave_mode=2, reg_addr_16bit=False)
+check("configure-only restores 8-bit pointer",
+      d.get("status", {}).get("reg_addr_width") == 8, str(d)[:120])
+
+old_config = si104_stub._BUS.i2c_channels[1]
+d = tool("si104_i2c_slave")(channel=1, action="configure", slave_addr=0x45,
+                            slave_mode=2, data_16bit=True)
+check("configure applies changed word format on matching address",
+      d.get("initialized") is True and si104_stub._BUS.i2c_channels[1] is not old_config
+      and si104_stub._BUS.i2c_channels[1].data_16bit is True, str(d)[:120])
+
 d = tool("si104_i2c_slave")(channel=2, action="push", slave_addr=0x50,
                             slave_mode=1, data_hex="AABB")
 check("mailbox push", d.get("action") == "push" and d.get("pushed_bytes") == 2, str(d)[:90])
@@ -278,6 +310,8 @@ check("tx_status done_ok", d.get("state") == "done_ok" and d.get("total_bytes") 
 
 d = tool("si104_spi_control")(action="abort")
 check("abort accepted", d.get("action") == "abort", str(d))
+d = tool("si104_spi_control")(action="tx_status")
+check("abort preserves completed SPI status", d.get("state") == "done_ok", str(d)[:90])
 
 d = tool("si104_raw_request")(interface=0, command=0x1F)
 check("raw 0x1F on I2C face", d.get("reply_bytes") == 10, str(d))
@@ -295,6 +329,19 @@ d = tool("si104_device_info")()
 check("device_info vcc rail", d.get("vcc", {}).get("output_enabled") is True
       and d.get("vcc", {}).get("channel") == 0, str(d.get("vcc"))[:90])
 
+with patch.object(si104_stub.Device, "version", side_effect=si104_stub.Error("version read failed", code=-8)):
+    with patch.object(si104_stub.Device, "runtime", side_effect=RuntimeError("runtime unavailable")):
+        d = tool("si104_device_info")()
+        try:
+            server.DeviceInfoOut.model_validate(d)
+            typed_ok = True
+        except Exception:
+            typed_ok = False
+        check("device_info section failures keep valid output schema",
+              typed_ok and d.get("version_hex") is None and d.get("runtime") is None
+              and d.get("section_errors", {}).get("version_hex", {}).get("code") == -8
+              and "runtime" in d.get("section_errors", {}) and "i2c" in d, str(d)[:130])
+
 d = tool("si104_i2c_control")(channel=0, action="abort")
 check("i2c_control abort", d.get("action") == "abort" and d.get("channel") == 0, str(d))
 
@@ -307,6 +354,13 @@ tool("si104_i2c_control")(channel=3, action="reset")
 st = tool("si104_device_info")(channel=3).get("i2c", {}).get("status", {})
 check("i2c reset clears channel config", st.get("role") == 0
       and st.get("initialized") is False, str(st)[:80])
+
+tool("si104_i2c_slave")(channel=3, action="configure", slave_addr=0x55, slave_mode=0)
+d = tool("si104_i2c_scan")(channel=0, first=0x55, last=0x55)
+check("slave answers while its channel is configured", d.get("found") == ["0x55"], str(d))
+tool("si104_i2c_scan")(channel=3, first=0x55, last=0x55)
+d = tool("si104_i2c_scan")(channel=0, first=0x55, last=0x55)
+check("master reconfiguration removes same-channel slave ACK", d.get("found") == [], str(d))
 
 d = tool("si104_read_vcc")(serial="NOPE")
 check("unknown serial -> structured error", "error" in d
