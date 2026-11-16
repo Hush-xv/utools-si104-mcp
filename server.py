@@ -956,7 +956,12 @@ def si104_i2c_scan(
                 found.append(f"0x{addr:02X}")
                 LOG.info("si104_i2c_scan: 0x%02X acked", addr)
             except Error as e:
-                if e.completion_unknown or (e.code, e.firmware_status) not in _SCAN_ABSENT:
+                # Allowlist only: do NOT treat completion_unknown as fatal.
+                # Hardware-verified (three calibration windows, ~18k probes):
+                # this firmware sets completion_unknown=True on every ordinary
+                # NACK, so honoring it here aborts the scan on any empty
+                # address. Transport-level faults still match the NOT-list.
+                if (e.code, e.firmware_status) not in _SCAN_ABSENT:
                     LOG.warning("si104_i2c_scan aborted at 0x%02X: %s", addr, e)
                     error = _error_result(e)
                     error.update(error=f"scan aborted at 0x{addr:02X}: {e}",

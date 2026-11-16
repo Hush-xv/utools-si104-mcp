@@ -14,6 +14,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 SERVER = Path(__file__).with_name("server.py")
+SLAVE_CH = int(os.environ.get("SI104_SLAVE_CH", "2"))  # bench wiring: slave-side channel
 
 
 async def main() -> int:
@@ -71,14 +72,14 @@ async def main() -> int:
             print("== i2c_control reset ch3 (spare channel) ==")
             print(await call("si104_i2c_control", {"channel": 3, "action": "reset"}))
 
-            print("== slave mailbox push ch1@0x45 (reconfigures ch1 to mailbox mode) ==")
+            print(f"== slave mailbox push ch{SLAVE_CH}@0x45 (reconfigures to mailbox mode) ==")
             print(await call("si104_i2c_slave", {
-                "channel": 1, "action": "push", "slave_addr": 0x45,
+                "channel": SLAVE_CH, "action": "push", "slave_addr": 0x45,
                 "slave_mode": 1, "data_hex": "A5A5"}))
 
-            print("== slave mailbox pop ch1@0x45 ==")
+            print(f"== slave mailbox pop ch{SLAVE_CH}@0x45 ==")
             print(await call("si104_i2c_slave", {
-                "channel": 1, "action": "pop", "slave_addr": 0x45,
+                "channel": SLAVE_CH, "action": "pop", "slave_addr": 0x45,
                 "slave_mode": 1, "size": 4}))
 
             print("== device_info vcc section ==")
