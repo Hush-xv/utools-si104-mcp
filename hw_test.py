@@ -31,7 +31,9 @@ async def main() -> int:
                 res = await session.call_tool(name, args or {})
                 text = res.content[0].text
                 if text.startswith("Error executing tool"):  # SDK ToolError wrap
-                    text = text.split(": ", 1)[1]
+                    # SDK 2.3: ToolError keeps its JSON message after the prefix,
+                    # but non-ToolError faults surface WITHOUT any detail.
+                    text = text.split(": ", 1)[1] if ": " in text else text
                 return json.loads(text)
 
             print("== enumerate ==")
