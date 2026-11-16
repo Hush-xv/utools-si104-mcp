@@ -31,7 +31,7 @@ async def main() -> int:
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             init = await session.initialize()
-            print("server:", init.serverInfo.name, "proto:", init.protocolVersion)
+            print("server:", init.server_info.name, "proto:", init.protocol_version)
 
             tools = await session.list_tools()
             names = [t.name for t in tools.tools]
@@ -48,26 +48,26 @@ async def main() -> int:
 
             # MCP spec conformance: every tool declares a structured-output
             # schema; enumerate is read-only with a display title.
-            assert all(t.outputSchema is not None for t in tools.tools), \
+            assert all(t.output_schema is not None for t in tools.tools), \
                 "tools missing outputSchema"
             enum_tool = next(t for t in tools.tools if t.name == "si104_enumerate")
-            assert enum_tool.annotations and enum_tool.annotations.readOnlyHint is True
+            assert enum_tool.annotations and enum_tool.annotations.read_only_hint is True
             assert enum_tool.title == "List SI104 dongles on USB"
 
             # Input-side conformance: enum-constrained choices and per-parameter
             # descriptions (the model sees the inputSchema, not the docstring).
             ctl = next(t for t in tools.tools if t.name == "si104_i2c_control")
-            assert "enum" in ctl.inputSchema["properties"]["action"], "action enum missing"
-            assert "description" in ctl.inputSchema["properties"]["channel"]
+            assert "enum" in ctl.input_schema["properties"]["action"], "action enum missing"
+            assert "description" in ctl.input_schema["properties"]["channel"]
             tw = next(t for t in tools.tools if t.name == "si104_spi_tx_words")
-            assert tw.inputSchema["properties"]["data_bits"].get("enum") == [8, 16, 32]
+            assert tw.input_schema["properties"]["data_bits"].get("enum") == [8, 16, 32]
 
             res = await session.call_tool("si104_enumerate", {})
             payload = parse(res)
             print("enumerate:", payload)
             assert "count" in payload
-            assert res.structuredContent is not None, "missing structuredContent"
-            assert res.structuredContent.get("count") == payload["count"]
+            assert res.structured_content is not None, "missing structuredContent"
+            assert res.structured_content.get("count") == payload["count"]
 
             res = await session.call_tool("si104_device_info", {})
             payload = parse(res)
@@ -88,7 +88,7 @@ async def main() -> int:
             print("raw_request:", payload)
             assert "error" in payload or "reply_hex" in payload
             # device-level failures carry the MCP isError flag, text stays JSON
-            assert res.isError == ("error" in payload)
+            assert res.is_error == ("error" in payload)
 
             res = await session.call_tool("si104_read_vcc", {})
             payload = parse(res)

@@ -8,22 +8,17 @@ version = "1.1.0"
 description = "MCP server wrapping the UTools-SI104 USB-to-SPI/I2C adapter SDK (14 tools)"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["mcp>=1.25,<2"]
+dependencies = ["mcp>=2.3,<3"]
 
 [project.scripts]
 si104-mcp = "server:main"
-si104-console = "si104_launcher:main"
 
 # The vendor wheel (utools_si104) is deliberately NOT a pip dependency — it is
 # license-restricted and must be installed from the official SDK package into
 # the same environment (see README).
 
 [tool.setuptools]
-py-modules = ["server", "si104_stub", "si104_launcher"]
-packages = ["si104_console"]
-
-[tool.setuptools.package-data]
-si104_console = ["console.html"]
+py-modules = ["server", "si104_stub"]
 
 [tool.ruff]
 line-length = 120

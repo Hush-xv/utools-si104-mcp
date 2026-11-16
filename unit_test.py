@@ -19,7 +19,7 @@ import si104_stub
 sys.modules["si104"] = si104_stub  # server imports si104 -> test double
 
 import server  # noqa: E402  (must come after the stub injection)
-from mcp.server.fastmcp.exceptions import ToolError  # noqa: E402
+from mcp.server.mcpserver.exceptions import ToolError  # noqa: E402
 
 RESULTS = []
 

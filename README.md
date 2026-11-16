@@ -8,7 +8,7 @@
 
 ## 特性
 
-- **双传输无状态**：stdio（AI 客户端）+ 可选 HTTP（网页控制台）；每次工具调用原子化 `open → 操作 → close`，只在调用期间占用 dongle（毫秒级），与 uTools 主程序共存，无需常驻进程。同一时间只服务一个客户端，并发会撞 USB 互斥（瞬时 `-2/-3` 服务端已内置 ≤2 次 100ms 自动重试，仅重试 open、绝不重试总线操作；极端并发仍可能报错，重试即可）
+- **stdio 无状态**：每次工具调用原子化 `open → 操作 → close`，只在调用期间占用 dongle（毫秒级），与 uTools 主程序共存，无需常驻进程。同一时间只服务一个客户端，并发会撞 USB 互斥（瞬时 `-2/-3` 服务端已内置 ≤2 次 100ms 自动重试，仅重试 open、绝不重试总线操作；极端并发仍可能报错，重试即可）
 - **全 API 覆盖**：14 个工具，含 `si104_raw_request` 万能透传兜底（固件私有命令）、`si104_vcc_control` 供电控制与 `si104_i2c_control` 通道恢复
 - **结构化错误**：`{error, code, code_meaning, backend_code, firmware_status, completion_unknown}`；`code_meaning` 按 SDK Guide §08 官方错误码表给出静态含义，**`completion_unknown=true` 时总线操作可能已发生，禁止盲目重发**（附 `retry_hint`）
 - **文档对齐**：容量上限（i2c TX≤504、寄存器读≤512 但自增按 256 页翻页、寄存器写≤504 含指针字节、raw request 请求/回复各≤512、SPI TX≤504、长发送 ≤1024 word）、速率预设（mode 0/1/2 = 100k/400k/1M，`bus_hz` 仅 mode=3 生效）、状态解码（SPI_TX_STATUS BB5HI、I2C GET_STATUS 32 B）均按官方《SDK Guide》/《Technical Manual》实现（容量与错误码已对照 SDK 1.0.5 官方文档复核）
@@ -133,32 +133,6 @@ App 的 MCP 设置选自定义（stdio）：命令 = `<venv>\Scripts\python.exe`
 ```bat
 npx @modelcontextprotocol/inspector .venv\Scripts\python.exe server.py
 ```
-
-### 网页控制台（HTTP）
-
-不经任何客户端，浏览器直接操作设备——与 AI 客户端共用同一套工具、校验和错误通道：
-
-```bash
-# Linux/macOS
-SI104_MCP_TRANSPORT=http .venv/bin/python server.py     # 默认 http://127.0.0.1:8800
-```
-```bat
-:: Windows (cmd)
-set SI104_MCP_TRANSPORT=http && .venv\Scripts\python.exe server.py
-```
-
-打开 http://127.0.0.1:8800：选择设备与 I2C 通道，在主机、从机和 SPI 工作区操作；从机寄存器模式可只配置地址与指针位宽，操作结果在右侧显示完整 HEX。每路通道的表单草稿独立保存，实际状态可通过“读取四路状态”刷新。VCC 为所有 I2C 通道共享，事务记录仅保留在当前页面会话中。
-
-可双击 Windows 的 `start-windows.cmd`，或运行 `.venv/bin/python si104_launcher.py`（macOS/Linux）。启动器检查本机 `/health`：已有 SI104 服务则复用，未启动则启动服务并等待就绪，然后打开浏览器。端口由其他程序占用或 SDK 加载失败时会报告原因或日志路径。安装后的 `si104-console` 命令使用同一入口。`/health` 只返回服务身份和就绪状态，不访问 USB。macOS 从仓库源码启动时可自动定位仓库附带的 arm64 库；wheel 不包含 `runtime/`，从其他目录安装后请显式配置原生库路径。
-
-| 环境变量 | 默认 | 说明 |
-|---|---|---|
-| `SI104_MCP_TRANSPORT` | `stdio` | 设为 `http` 启用网页控制台 |
-| `SI104_MCP_HOST` | `127.0.0.1` | 监听地址；绑非回环地址会在日志大声警告 |
-| `SI104_MCP_PORT` | `8800` | 监听端口 |
-| `SI104_MCP_TOKEN` | 未设 | 设置后 `/mcp` 要求 `Authorization: Bearer <token>`，控制台页面顶部粘贴即可 |
-
-**安全边界**：默认仅监听本机回环；控制台可执行包括 `si104_raw_request` 在内的全部工具——请勿在不受信任的网络暴露，跨机访问务必设置 `SI104_MCP_TOKEN`。HTTP 与网页回归由 CI 的替身模式验证。
 
 ## 使用方法
 

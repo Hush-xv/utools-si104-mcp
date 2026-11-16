@@ -18,8 +18,8 @@ from functools import wraps
 from typing import Annotated, Literal, Optional
 
 import anyio
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -60,9 +60,8 @@ logging.basicConfig(
 )
 LOG = logging.getLogger("si104-mcp")
 
-mcp = FastMCP(
+mcp = MCPServer(
     "si104",
-    stateless_http=True,  # web-console transport: no session affinity (stdio ignores this)
     instructions=(
         "UTools-SI104 USB-to-SPI/I2C adapter server. Binary data crosses the "
         "tool boundary as lowercase hex strings without separators. serial=None "
@@ -1397,81 +1396,8 @@ def si104_i2c_slave(
     return _with_device(serial, op, "si104_i2c_slave")
 
 
-
-def _BearerGate(app, token):
-    """ASGI wrapper: /mcp requires 'Authorization: Bearer <token>'; the static
-    console page stays public (it holds no secrets, the token is user-supplied)."""
-
-    async def gated(scope, receive, send):
-        if scope["type"] == "http" and scope.get("path") == "/mcp":
-            headers = dict(scope.get("headers") or [])
-            auth = headers.get(b"authorization", b"").decode()
-            if auth != f"Bearer {token}":
-                await send({"type": "http.response.start", "status": 401,
-                            "headers": [(b"content-type", b"text/plain")]})
-                await send({"type": "http.response.body", "body": b"unauthorized"})
-                return
-        await app(scope, receive, send)
-
-    return gated
-
-
-def _console_response(request):  # noqa: ARG001 — Starlette passes the Request
-    from importlib.resources import files
-    from starlette.responses import HTMLResponse
-
-    LOG.debug("_console_response: serving packaged console")
-    return HTMLResponse(files("si104_console").joinpath("console.html").read_text(encoding="utf-8"))
-
-
-def _health_response(request):  # noqa: ARG001 — Starlette passes the Request
-    from starlette.responses import JSONResponse
-
-    LOG.debug("_health_response: service is ready")
-    return JSONResponse({"service": "si104-mcp", "version": "1.1.0", "status": "ok", "ready": True})
-
-
-def _run_http():
-    """Streamable-HTTP entry for the web console (README: 网页控制台).
-
-    SI104_MCP_HOST defaults to 127.0.0.1 and SI104_MCP_PORT to 8800. The
-    console can drive hardware — including si104_raw_request — so binding
-    outside loopback is allowed but loudly warned about; SI104_MCP_TOKEN,
-    when set, gates /mcp behind 'Authorization: Bearer <token>'.
-    """
-    import uvicorn
-    from starlette.routing import Route
-
-    host = os.environ.get("SI104_MCP_HOST", "127.0.0.1")
-    port_text = os.environ.get("SI104_MCP_PORT", "8800")
-    if not port_text.isdecimal() or not 1 <= int(port_text) <= 65535:
-        raise SystemExit(f"si104-mcp: SI104_MCP_PORT must be 1..65535, got {port_text!r}")
-    port = int(port_text)
-    token = os.environ.get("SI104_MCP_TOKEN") or None
-    if host not in ("127.0.0.1", "localhost", "::1"):
-        LOG.warning(
-            "[http] binding %s:%d — the console (including si104_raw_request) is "
-            "network-reachable; set SI104_MCP_TOKEN or restrict access!", host, port
-        )
-    app = mcp.streamable_http_app()
-    app.router.routes.append(Route("/", _console_response, methods=["GET"]))
-    app.router.routes.append(Route("/health", _health_response, methods=["GET"]))
-    if token:
-        app = _BearerGate(app, token)
-    LOG.info("[http] console: http://%s:%d/  |  mcp: /mcp%s",
-             host, port, "  (token required)" if token else "")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
-
-
 def main():
-    transport = os.environ.get("SI104_MCP_TRANSPORT", "stdio").strip().lower()
-    LOG.debug("main transport=%s", transport)
-    if transport == "http":
-        _run_http()
-    elif transport == "stdio":
-        mcp.run()  # stdio
-    else:
-        raise SystemExit(f"si104-mcp: SI104_MCP_TRANSPORT must be stdio or http, got {transport!r}")
+    mcp.run()  # stdio
 
 
 if __name__ == "__main__":
