@@ -151,11 +151,11 @@ npx @modelcontextprotocol/inspector .venv\Scripts\python.exe server.py
 .venv\Scripts\python smoke_test.py
 ```
 
-`unit_test.py` 覆盖参数校验、二进制解码器和工具流程；`smoke_test.py`、`http_test.py` 始终使用测试替身，插着真机也不会发送总线事务。真机测试请显式运行 `hw_test.py` 等硬件脚本并确认接线；空总线和卡住的总线需分别复测扫描超时语义。
+`unit_test.py` 覆盖参数校验、二进制解码器和工具流程；`smoke_test.py` 始终使用测试替身，插着真机也不会发送总线事务。真机测试请显式运行 `hw_test.py` 等硬件脚本并确认接线；空总线和卡住的总线需分别复测扫描超时语义。
 
 ## 无硬件自测与 CI
 
-仓库自带 `si104_stub.py` 测试替身（内存版 SDK 子集模型，**非固件仿真器**）：设置 `SI104_MCP_STUB=1` 时，即使装有官方 SDK 也只使用替身。`unit_test.py`、`smoke_test.py` 和 `http_test.py` 不访问真机；普通生产启动缺 wheel 时会报错退出并给出安装指引。
+仓库自带 `si104_stub.py` 测试替身（内存版 SDK 子集模型，**非固件仿真器**）：设置 `SI104_MCP_STUB=1` 时，即使装有官方 SDK 也只使用替身。`unit_test.py` 和 `smoke_test.py` 不访问真机；普通生产启动缺 wheel 时会报错退出并给出安装指引。
 
 CI（`.github/workflows/ci.yml`）：ruff、单元、stdio/HTTP 契约和 Node 网页回归，矩阵 ubuntu/windows × Python 3.10/3.13，不依赖 vendor wheel 与硬件。实机行为仍以显式运行的 `hw_test.py` / `stress_boundary_test.py` 为准。
 
